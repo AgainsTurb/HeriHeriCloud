@@ -62,7 +62,7 @@ impl VfsTree {
     /// Creates a fresh, empty Virtual File System
     pub fn new(root_lanzou_id: String, file_path: PathBuf) -> Self {
         Self {
-            last_modified: current_timestamp(),
+            last_modified: 0,
             root_lanzou_id,
             nodes: HashMap::new(),
             next_id: 1,
