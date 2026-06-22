@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { useTranslation } from "react-i18next";
 
 const globalProgress: Record<string, any> = {};
 const globalLastUpdate: Record<string, { time: number, loaded: number, speed: string, eta: string }> = {};
@@ -34,6 +35,7 @@ listen("upload_progress", (event: any) => {
 });
 
 export default function Uploading() {
+  const { t } = useTranslation();
   const [activeTasks, setActiveTasks] = useState<any[]>([]);
   const [progressMap, setProgressMap] = useState<Record<string, any>>(globalProgress);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -97,20 +99,20 @@ export default function Uploading() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <header style={styles.header}>
-        <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px", color: "#111827" }}>Uploading</h2>
+        <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px", color: "#111827" }}>{t("Uploading")}</h2>
       </header>
 
       <div style={styles.listContainer}>
         <div style={styles.listHeaderRow}>
-          <div>File Name</div>
-          <div>Speed</div>
-          <div>ETA</div>
-          <div>Progress</div>
-          <div style={{ textAlign: "right" }}>Actions</div>
+          <div>{t("File Name")}</div>
+          <div>{t("Speed")}</div>
+          <div>{t("ETA")}</div>
+          <div>{t("Progress")}</div>
+          <div style={{ textAlign: "right" }}>{t("Actions")}</div>
         </div>
 
         {topLevelTasks.length === 0 ? (
-          <div style={styles.statusState}>No active uploads.</div>
+          <div style={styles.statusState}>{t("No active uploads.")}</div>
         ) : (
           <div style={{ overflowY: "auto", flex: 1 }}>
             {topLevelTasks.map((task) => {

@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useTranslation } from "react-i18next";
+import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import "./App.css";
 
 import Home from "./Components/Home";
@@ -7,8 +9,11 @@ import Bin from "./Components/Bin";
 import Uploading from "./Components/Uploading";
 import Downloading from "./Components/Downloading";
 import Finished from "./Components/Finished";
+import Settings from "./Components/Settings";
+import Transfer from "./Components/Transfer";
 
 export default function App() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState("Disconnected");
   const [activeTab, setActiveTab] = useState("home");
   
@@ -23,6 +28,13 @@ export default function App() {
 
   const isUploadingBatch = useRef(false);
   const isSyncing = useRef(false);
+
+  useEffect(() => {
+    const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+    const upLimit = config.unlimitedUpload !== false ? 0 : (config.uploadSpeedLimit || 0);
+    const downLimit = config.unlimitedDownload !== false ? 0 : (config.downloadSpeedLimit || 0);
+    invoke("vfs_update_speed_limits", { uploadLimit: upLimit, downloadLimit: downLimit }).catch(console.error);
+  }, []);
 
   useEffect(() => {
     if (countdown > 0) {
@@ -41,10 +53,25 @@ export default function App() {
     }
   }, []);
 
+  async function triggerSystemNotification(title: string, body: string, playSound: boolean) {
+    if (playSound) {
+      new Audio('/chime.mp3').play().catch(e => console.warn("Audio play failed:", e));
+    }
+    
+    let permissionGranted = await isPermissionGranted();
+    if (!permissionGranted) {
+      const permission = await requestPermission();
+      permissionGranted = permission === 'granted';
+    }
+    if (permissionGranted) {
+      sendNotification({ title, body });
+    }
+  }
+
   async function restoreSession(yl: string, pd: string, phone: string) {
     setStatus("Connecting...");
     try {
-      const success = await invoke<boolean>("set_lanzou_cookies", { ylogin: yl, phpdiskInfo: pd });
+      const success = await invoke<boolean>("set_lanzou_cookies", { ylogin: yl, phpdiskInfo: pd, phone });
       if (success) {
         setStatus("Connected");
         setUsername(phone.replace(/(\d{3})\d{4}(\d{4})/, "$1****$2"));
@@ -123,7 +150,9 @@ export default function App() {
   }
 
   function handleLogout() {
-    localStorage.clear();
+    localStorage.removeItem("ylogin");
+    localStorage.removeItem("phpdisk_info");
+    localStorage.removeItem("phone");
     setStatus("Disconnected");
     setUsername("");
   }
@@ -150,8 +179,11 @@ export default function App() {
         return;
       }
 
+      const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+      const limit = config.concurrentUploads || 2;
+
       const runningCount = active.filter((t: any) => !t.isGroup && t.status === "Running").length;
-      if (runningCount >= 2) return;
+      if (runningCount >= limit) return;
 
       const nextTaskIndex = active.findIndex((t: any) => !t.isGroup && t.status === "Queued");
       if (nextTaskIndex === -1) return;
@@ -227,6 +259,16 @@ export default function App() {
       finished.push({ id, name, type, status, error, time: Date.now() });
     }
 
+    if (status === "Success" && !groupId) {
+      const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+      const shouldNotify = config.notifyUpload !== false;
+      const playSound = config.notifySound === true;
+      
+      if (shouldNotify) {
+        triggerSystemNotification("Upload Complete", `${name} has finished uploading.`, playSound);
+      }
+    }
+
     localStorage.setItem("heriheri_active", JSON.stringify(active));
     localStorage.setItem("heriheri_finished", JSON.stringify(finished));
     window.dispatchEvent(new CustomEvent("TASK_END"));
@@ -236,9 +278,12 @@ export default function App() {
   useEffect(() => {
     const processDownQueue = () => {
       let active = JSON.parse(localStorage.getItem("heriheri_down_active") || "[]");
+
+      const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+      const limit = config.concurrentDownloads || 2;
       
       const runningCount = active.filter((t: any) => !t.isGroup && t.status === "Running").length;
-      if (runningCount >= 2) return;
+      if (runningCount >= limit) return;
 
       const nextTaskIndex = active.findIndex((t: any) => !t.isGroup && t.status === "Queued");
       if (nextTaskIndex === -1) return;
@@ -249,7 +294,12 @@ export default function App() {
       window.dispatchEvent(new CustomEvent("DOWN_TASK_START"));
 
       invoke("vfs_download_file", { 
-        taskId: task.id, vfsId: task.vfsId, localPath: task.localPath, resumeOffset: task.resumeOffset || 0, totalSize: task.totalSize || 0
+        taskId: task.id, 
+        vfsId: task.vfsId || 0,          
+        shareCode: task.shareCode || "", 
+        localPath: task.localPath, 
+        resumeOffset: task.resumeOffset || 0, 
+        totalSize: task.totalSize || 0
       })
       .then(() => finishDownTask(task.id, task.name, "Download", "Success", undefined, task.groupId))
       .catch((err) => {
@@ -271,6 +321,7 @@ export default function App() {
            localStorage.setItem("heriheri_down_active", JSON.stringify(activeList));
            window.dispatchEvent(new CustomEvent("DOWN_TASK_END"));
         } else {
+           console.error(`[Download Failed] Task: ${task.name} | Error:`, errMsg);
            finishDownTask(task.id, task.name, "Download", "Failed", errMsg, task.groupId);
         }
       });
@@ -301,6 +352,16 @@ export default function App() {
       finished.push({ id, name, type, status, error, time: Date.now() });
     }
 
+    if (status === "Success" && !groupId) {
+      const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+      const shouldNotify = config.notifyDownload !== false;
+      const playSound = config.notifySound === true;
+      
+      if (shouldNotify) {
+        triggerSystemNotification("Download Complete", `${name} has finished downloading.`, playSound);
+      }
+    }
+
     localStorage.setItem("heriheri_down_active", JSON.stringify(active));
     localStorage.setItem("heriheri_finished", JSON.stringify(finished));
     window.dispatchEvent(new CustomEvent("DOWN_TASK_END"));
@@ -313,6 +374,8 @@ export default function App() {
     if (activeTab === "uploading") return <Uploading />;
     if (activeTab === "downloading") return <Downloading />;
     if (activeTab === "finished") return <Finished />;
+    if (activeTab === "settings") return <Settings />;
+    if (activeTab === "transfer") return <Transfer />;
     return <Home status={status} />;
   };
 
@@ -327,26 +390,41 @@ export default function App() {
         <nav style={styles.navMenu}>
           <div style={activeTab === "home" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("home")}>
             <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M2 3h6l2 3h12v15H2z"/></svg>
-            All Files
+            {t("All Files")}
           </div>
           <div style={activeTab === "bin" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("bin")}>
             <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M3 6h18M19 6v14H5V6m3 0V4h8v2"/></svg>
-            Recycle Bin
+            {t("Recycle Bin")}
           </div>
           
           <hr style={styles.divider} />
           
           <div style={activeTab === "uploading" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("uploading")}>
             <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M21 15v4H3v-4M17 8l-5-5-5 5M12 3v12"/></svg>
-            Uploading
+            {t("Uploading")}
           </div>
           <div style={activeTab === "downloading" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("downloading")}>
             <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M21 15v4H3v-4M7 10l5 5 5-5M12 15V3"/></svg>
-            Downloading
+            {t("Downloading")}
+          </div>
+          <div style={activeTab === "transfer" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("transfer")}>
+            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><polyline points="16 3 21 8 16 13"/>
+              <line x1="21" y1="8" x2="9" y2="8"/>
+              <polyline points="8 21 3 16 8 11"/>
+              <line x1="3" y1="16" x2="15" y2="16"/>
+            </svg>
+            {t("Transfer")}
           </div>
           <div style={activeTab === "finished" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("finished")}>
             <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><polyline points="20 6 9 17 4 12"/></svg>
-            Finished
+            {t("Finished")}
+          </div>
+
+          <hr style={styles.divider} />
+
+          <div style={activeTab === "settings" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("settings")}>
+            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            {t("Settings")}
           </div>
         </nav>
 
@@ -356,7 +434,7 @@ export default function App() {
               <img src="https://up.woozooo.com/images/u.gif" alt="avatar" style={styles.avatar} />
               <div style={{ flex: 1 }}>
                 <div style={styles.username}>{username}</div>
-                <div style={styles.statusText}>ONLINE</div>
+                <div style={styles.statusText}>{t("ONLINE")}</div>
               </div>
               <button style={styles.logoutBtn} onClick={handleLogout} title="Logout">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M9 21H3V3h6M16 17l5-5-5-5M21 12H9"/></svg>
@@ -364,8 +442,8 @@ export default function App() {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              <button style={styles.primaryButton} onClick={() => setShowLogin(true)}>Login</button>
-              <button style={styles.secondaryButton} onClick={() => setShowRegister(true)}>Register</button>
+              <button style={styles.primaryButton} onClick={() => setShowLogin(true)}>{t("Login")}</button>
+              <button style={styles.secondaryButton} onClick={() => setShowRegister(true)}>{t("Register")}</button>
             </div>
           )}
         </div>
@@ -382,16 +460,16 @@ export default function App() {
             <h3 style={styles.modalTitle}>Login to Lanzou</h3>
             <form onSubmit={handleLoginSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px", marginTop: "8px" }}>
               <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>Phone Number</label>
+                <label style={styles.inputLabel}>{t("Phone Number")}</label>
                 <input style={styles.input} required
                   onChange={(e) => setLoginForm({ ...loginForm, phone: e.target.value })} />
               </div>
               <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>Password</label>
+                <label style={styles.inputLabel}>{t("Password")}</label>
                 <input style={styles.input} type="password" required
                   onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} />
               </div>
-              <button type="submit" style={{...styles.primaryButton, marginTop: "8px"}}>Sign In</button>
+              <button type="submit" style={{...styles.primaryButton, marginTop: "8px"}}>{t("Sign In")}</button>
             </form>
           </div>
         </div>
@@ -400,17 +478,17 @@ export default function App() {
       {showRegister && (
         <div style={styles.modalOverlay} onClick={() => setShowRegister(false)}>
           <div style={styles.modalBox} onClick={(e) => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>Register Account</h3>
+            <h3 style={styles.modalTitle}>{t("Register Account")}</h3>
             
             <form onSubmit={handleRegisterSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px", marginTop: "8px" }}>
               <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>Phone Number</label>
+                <label style={styles.inputLabel}>{t("Phone Number")}</label>
                 <input style={styles.input} required
                   onChange={(e) => setRegForm({ ...regForm, phone: e.target.value })} />
               </div>
 
               <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>Verification Code</label>
+                <label style={styles.inputLabel}>{t("Verification Code")}</label>
                 <div style={{ display: "flex", gap: "8px" }}>
                   <input style={{...styles.input, flex: 1}} required
                     onChange={(e) => setRegForm({ ...regForm, code: e.target.value })} />
@@ -426,20 +504,20 @@ export default function App() {
               </div>
 
               <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>Password</label>
+                <label style={styles.inputLabel}>{t("Password")}</label>
                 <input style={styles.input} type="password" required
                   onChange={(e) => setRegForm({ ...regForm, password: e.target.value })} />
               </div>
 
               <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>Confirm Password</label>
+                <label style={styles.inputLabel}>{t("Confirm Password")}</label>
                 <input style={styles.input} type="password" required
                   onChange={(e) => setRegForm({ ...regForm, confirm: e.target.value })} />
               </div>
 
               <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
-                <button type="button" style={{...styles.secondaryButton, flex: 1}} onClick={() => setShowRegister(false)}>Cancel</button>
-                <button type="submit" style={{...styles.primaryButton, flex: 1}}>Register</button>
+                <button type="button" style={{...styles.secondaryButton, flex: 1}} onClick={() => setShowRegister(false)}>{t("Cancel")}</button>
+                <button type="submit" style={{...styles.primaryButton, flex: 1}}>{t("Register")}</button>
               </div>
             </form>
           </div>

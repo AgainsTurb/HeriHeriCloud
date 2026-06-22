@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { useTranslation } from "react-i18next";
 import { getFileIcon } from "../Utils/fileIcons";
 
 import { DndContext, useDraggable, useDroppable, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
@@ -79,6 +80,7 @@ function FileRowNode({ node, index, isSelected, isCut, formatTime, handleRowClic
 }
 
 function BreadcrumbNode({ crumb, isLast, navigateToFolder }: any) {
+  const { t } = useTranslation();
   const { setNodeRef, isOver } = useDroppable({
     id: crumb.id,
     disabled: isLast
@@ -96,7 +98,7 @@ function BreadcrumbNode({ crumb, isLast, navigateToFolder }: any) {
         }} 
         onClick={(e) => { e.stopPropagation(); navigateToFolder(crumb.id); }}
       >
-        {crumb.name}
+        {crumb.id === 0 || crumb.name === "All Files" ? t("All Files") : crumb.name}
       </span>
       {!isLast && <span style={{ margin: "0 6px", color: "#9ca3af" }}>/</span>}
     </span>
@@ -104,6 +106,7 @@ function BreadcrumbNode({ crumb, isLast, navigateToFolder }: any) {
 }
 
 export default function Home({ status }: { status: string }) {
+  const { t } = useTranslation();
   const [nodes, setNodes] = useState<any[]>([]);
   const [breadcrumbs, setBreadcrumbs] = useState<{id: number, name: string}[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -343,17 +346,31 @@ export default function Home({ status }: { status: string }) {
   async function triggerShare(e: React.MouseEvent, vfsId: number) {
     e.stopPropagation();
     try {
-      const info = await invoke<any>("vfs_get_share_info", { id: vfsId });
-      const url = info.new_url || `${info.is_newd}/${info.f_id}`;
-      setShareData({ url: url || "No URL provided", pwd: info.pwd || "None" });
+      const targetIds = selectedNodes.has(vfsId) && selectedNodes.size > 1 ? Array.from(selectedNodes) : [vfsId];
+      let codes = [];
+      
+      for (const id of targetIds) {
+        const node = nodes.find(n => n.id === id);
+        if (node && node.node_type !== "Directory") {
+           const code = await invoke<string>("vfs_generate_share_code", { vfsId: id });
+           codes.push(code);
+        }
+      }
+      
+      if (codes.length === 0) {
+         showAlert(t("Share Error"), t("Folders cannot be shared. Please select files."));
+         return;
+      }
+      
+      setShareData({ url: codes.join("\n"), pwd: "" }); 
     } catch (error) {
-      showAlert("Share Error", "Failed to get share info.");
+      showAlert(t("Share Error"), String(error));
     }
   }
 
-  function formatTime(unixSeconds: number) {
-    if (!unixSeconds || unixSeconds === 0) return "-";
-    const d = new Date(unixSeconds * 1000);
+  function formatTime(timestampMs: number) {
+    if (!timestampMs || timestampMs === 0) return "-";
+    const d = new Date(timestampMs);
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   }
 
@@ -366,7 +383,7 @@ export default function Home({ status }: { status: string }) {
       >
         <header style={styles.header}>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px" }}>All Files</h2>
+            <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px" }}>{t("All Files")}</h2>
             <div style={styles.breadcrumbBar}>
               {breadcrumbs.map((crumb, idx) => (
                 <BreadcrumbNode 
@@ -382,19 +399,19 @@ export default function Home({ status }: { status: string }) {
 
         <div style={styles.listContainer} ref={containerRef}>
           <div style={styles.listHeaderRow}>
-            <div style={styles.cellName}>Name</div>
-            <div style={styles.cellDefault}>Size</div>
-            <div style={styles.cellDefault}>Time</div>
-            <div style={styles.cellDefault}>MD5 Hash</div>
-            <div style={styles.cellActions}>Actions</div>
+            <div style={styles.cellName}>{t("Name")}</div>
+            <div style={styles.cellDefault}>{t("Size")}</div>
+            <div style={styles.cellDefault}>{t("Time")}</div>
+            <div style={styles.cellDefault}>{t("MD5 Hash")}</div>
+            <div style={styles.cellActions}>{t("Actions")}</div>
           </div>
 
-          {isLoading && <div style={styles.statusState}>SYNCING & LOADING...</div>}
+          {isLoading && <div style={styles.statusState}>{t("SYNCING & LOADING...")}</div>}
           {!isLoading && nodes.length === 0 && status === "Connected" && (
-            <div style={styles.statusState}>This folder is empty. Right-click to begin.</div>
+            <div style={styles.statusState}>{t("This folder is empty. Right-click to begin.")}</div>
           )}
           {!isLoading && status !== "Connected" && (
-            <div style={styles.statusState}>Please connect to the cloud via the sidebar.</div>
+            <div style={styles.statusState}>{t("Please connect to the cloud via the sidebar.")}</div>
           )}
 
           {!isLoading && status === "Connected" && (
@@ -440,7 +457,7 @@ export default function Home({ status }: { status: string }) {
               <h3 style={styles.modalTitle}>{alertData.title}</h3>
               <p style={styles.modalText}>{alertData.msg}</p>
               <div style={styles.modalActions}>
-                <button style={styles.primaryButton} onClick={() => setAlertData(null)}>OK</button>
+                <button style={styles.primaryButton} onClick={() => setAlertData(null)}>{t("OK")}</button>
               </div>
             </div>
           </div>
@@ -449,21 +466,21 @@ export default function Home({ status }: { status: string }) {
         {showFolderModal && (
           <div style={styles.modalOverlay} onClick={() => setShowFolderModal(false)}>
             <div style={styles.modalBox} onClick={(e) => e.stopPropagation()}>
-              <h3 style={styles.modalTitle}>Create New Folder</h3>
+              <h3 style={styles.modalTitle}>{t("Create New Folder")}</h3>
               <form onSubmit={handleCreateFolderSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px", marginTop: "8px" }}>
                 <div style={styles.inputGroup}>
-                  <label style={styles.inputLabel}>Folder Name</label>
+                  <label style={styles.inputLabel}>{t("Folder Name")}</label>
                   <input style={styles.input} required autoFocus
                     value={folderForm.name} onChange={(e) => setFolderForm({ ...folderForm, name: e.target.value })} />
                 </div>
                 <div style={styles.inputGroup}>
-                  <label style={styles.inputLabel}>Description</label>
+                  <label style={styles.inputLabel}>{t("Description")}</label>
                   <input style={styles.input} 
                     value={folderForm.desc} onChange={(e) => setFolderForm({ ...folderForm, desc: e.target.value })} />
                 </div>
                 <div style={styles.modalActions}>
-                  <button type="button" style={styles.secondaryButton} onClick={() => setShowFolderModal(false)}>Cancel</button>
-                  <button type="submit" style={styles.primaryButton}>Create</button>
+                  <button type="button" style={styles.secondaryButton} onClick={() => setShowFolderModal(false)}>{t("Cancel")}</button>
+                  <button type="submit" style={styles.primaryButton}>{t("Create")}</button>
                 </div>
               </form>
             </div>
@@ -473,22 +490,23 @@ export default function Home({ status }: { status: string }) {
         {shareData && (
           <div style={styles.modalOverlay} onClick={() => setShareData(null)}>
             <div style={styles.modalBox} onClick={(e) => e.stopPropagation()}>
-              <h3 style={styles.modalTitle}>Share Item</h3>
+              <h3 style={styles.modalTitle}>{t("Share Item")}</h3>
               <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>Share Link</label>
-                <input style={styles.readOnlyInput} value={shareData.url} readOnly onClick={e => e.currentTarget.select()} />
-              </div>
-              <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>Password</label>
-                <input style={styles.readOnlyInput} value={shareData.pwd} readOnly onClick={e => e.currentTarget.select()} />
+                <label style={styles.inputLabel}>{t("HeriHeri Share Code")}</label>
+                <textarea 
+                  style={{...styles.readOnlyInput, fontFamily: "monospace", minHeight: "80px", resize: "vertical", whiteSpace: "pre-wrap"}} 
+                  value={shareData.url} 
+                  readOnly 
+                  onClick={e => e.currentTarget.select()} 
+                />
               </div>
               <div style={styles.modalActions}>
-                <button style={styles.secondaryButton} onClick={() => setShareData(null)}>Close</button>
+                <button style={styles.secondaryButton} onClick={() => setShareData(null)}>{t("Close")}</button>
                 <button style={styles.primaryButton} onClick={() => {
-                  navigator.clipboard.writeText(`Link: ${shareData.url}\nPassword: ${shareData.pwd}`);
+                  navigator.clipboard.writeText(shareData.url);
                   setShareData(null);
-                  showAlert("Copied", "Link copied to clipboard");
-                }}>Copy</button>
+                  showAlert("Copied", "Code copied to clipboard");
+                }}>{t("Copy")}</button>
               </div>
             </div>
           </div>
@@ -497,13 +515,13 @@ export default function Home({ status }: { status: string }) {
         {showBatchDelete && (
           <div style={styles.modalOverlay} onClick={() => setShowBatchDelete(false)}>
             <div style={styles.modalBox} onClick={(e) => e.stopPropagation()}>
-              <h3 style={styles.modalTitle}>Confirm Deletion</h3>
+              <h3 style={styles.modalTitle}>{t("Confirm Deletion")}</h3>
               <p style={styles.modalText}>
-                Are you sure you want to permanently delete <strong>{selectedNodes.size} item(s)</strong>? This action cannot be undone.
+                {t("Are you sure you want to permanently delete")} <strong>{selectedNodes.size} item(s)</strong>{t("? This action cannot be undone.")}
               </p>
               <div style={styles.modalActions}>
-                <button style={styles.secondaryButton} onClick={() => setShowBatchDelete(false)}>Cancel</button>
-                <button style={styles.dangerButton} onClick={confirmBatchDelete}>Delete</button>
+                <button style={styles.secondaryButton} onClick={() => setShowBatchDelete(false)}>{t("Cancel")}</button>
+                <button style={styles.dangerButton} onClick={confirmBatchDelete}>{t("Delete")}</button>
               </div>
             </div>
           </div>
@@ -512,16 +530,16 @@ export default function Home({ status }: { status: string }) {
         {showRenameModal && (
           <div style={styles.modalOverlay} onClick={() => setShowRenameModal(false)}>
             <div style={styles.modalBox} onClick={(e) => e.stopPropagation()}>
-              <h3 style={styles.modalTitle}>Rename Item</h3>
+              <h3 style={styles.modalTitle}>{t("Rename Item")}</h3>
               <form onSubmit={handleRenameSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px", marginTop: "8px" }}>
                 <div style={styles.inputGroup}>
-                  <label style={styles.inputLabel}>New Name</label>
+                  <label style={styles.inputLabel}>{t("New Name")}</label>
                   <input style={styles.input} required autoFocus
                     value={renameName} onChange={(e) => setRenameName(e.target.value)} />
                 </div>
                 <div style={styles.modalActions}>
-                  <button type="button" style={styles.secondaryButton} onClick={() => setShowRenameModal(false)}>Cancel</button>
-                  <button type="submit" style={styles.primaryButton}>Save</button>
+                  <button type="button" style={styles.secondaryButton} onClick={() => setShowRenameModal(false)}>{t("Cancel")}</button>
+                  <button type="submit" style={styles.primaryButton}>{t("Save")}</button>
                 </div>
               </form>
             </div>
@@ -536,34 +554,42 @@ export default function Home({ status }: { status: string }) {
           >
             {contextMenu.targetId === null ? (
               <>
-                <div style={styles.contextMenuItem} onClick={async () => { closeMenu(); setIsLoading(true); await invoke("vfs_sync_pull").catch((e) => console.warn("Sync pull skipped:", e)); await fetchDirectory(); }}>Refresh</div>
-                <div style={styles.contextMenuItem} onClick={() => { setShowFolderModal(true); closeMenu(); }}>New Folder</div>
-                <div style={styles.contextMenuItem} onClick={() => { handleUpload(); closeMenu(); }}>Upload File</div>
+                <div style={styles.contextMenuItem} onClick={async () => { closeMenu(); setIsLoading(true); await invoke("vfs_sync_pull").catch((e) => console.warn("Sync pull skipped:", e)); await fetchDirectory(); }}>{t("Refresh")}</div>
+                <div style={styles.contextMenuItem} onClick={() => { setShowFolderModal(true); closeMenu(); }}>{t("New Folder")}</div>
+                <div style={styles.contextMenuItem} onClick={() => { handleUpload(); closeMenu(); }}>{t("Upload File")}</div>
                 <div 
                   style={{...styles.contextMenuItem, opacity: clipboard ? 1 : 0.4, cursor: clipboard ? "pointer" : "default"}} 
                   onClick={() => { if(clipboard) triggerPaste(); closeMenu(); }}
                 >
-                  Paste
+                  {t("Paste")}
                 </div>
-                <div style={styles.contextMenuItem} onClick={() => { setSelectedNodes(new Set(nodes.map(n => n.id))); closeMenu(); }}>Select All</div>
+                <div style={styles.contextMenuItem} onClick={() => { setSelectedNodes(new Set(nodes.map(n => n.id))); closeMenu(); }}>{t("Select All")}</div>
               </>
             ) : (
               <>
-                <div style={styles.contextMenuItem} onClick={() => { triggerCut(Array.from(selectedNodes)); closeMenu(); }}>Cut</div>
+                <div style={styles.contextMenuItem} onClick={() => { triggerCut(Array.from(selectedNodes)); closeMenu(); }}>{t("Cut")}</div>
+                <div style={styles.contextMenuItem} onClick={(e) => { triggerShare(e as any, contextMenu.targetId!); closeMenu(); }}>{t("Share")}</div>
                 <div style={styles.contextMenuItem} onClick={() => {
                   const targetNode = nodes.find(n => n.id === contextMenu.targetId);
                   setRenameTargetId(contextMenu.targetId);
                   setRenameName(targetNode?.name || "");
                   setShowRenameModal(true);
                   closeMenu();
-                }}>Rename</div>
+                }}>{t("Rename")}</div>
                 <div style={styles.contextMenuItem} onClick={async () => {
-                  /* ... Your exact existing download logic ... */
                   const selectedFiles = Array.from(selectedNodes).map(id => nodes.find(n => n.id === id)).filter(Boolean);
                   if (selectedFiles.length === 0) { closeMenu(); return; }
 
-                  const dir = await open({ directory: true, title: "Select Download Folder" });
-                  if (!dir) { closeMenu(); return; }
+                  const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+                  let dir = "";
+
+                  if (config.useDefaultDownloadPath && config.downloadPath) {
+                    dir = config.downloadPath;
+                  } else {
+                    const selected = await open({ directory: true, title: "Select Download Folder" });
+                    if (!selected) { closeMenu(); return; }
+                    dir = selected as string;
+                  }
 
                   const activeDown = JSON.parse(localStorage.getItem("heriheri_down_active") || "[]");
                   const sep = dir.includes('\\') ? '\\' : '/';
@@ -618,8 +644,8 @@ export default function Home({ status }: { status: string }) {
                   window.dispatchEvent(new CustomEvent("DOWN_TASK_START"));
                   showAlert("Download Queued", `Items added to the queue.`);
                   closeMenu();
-                }}>Download</div>
-                <div style={{...styles.contextMenuItem, color: "#ef4444"}} onClick={() => { triggerBatchDelete(); closeMenu(); }}>Delete</div>
+                }}>{t("Download")}</div>
+                <div style={{...styles.contextMenuItem, color: "#ef4444"}} onClick={() => { triggerBatchDelete(); closeMenu(); }}>{t("Delete")}</div>
               </>
             )}
           </div>

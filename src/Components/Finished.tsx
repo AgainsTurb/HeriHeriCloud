@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 
 export default function Finished() {
+  const { t } = useTranslation();
   const [finishedTasks, setFinishedTasks] = useState<any[]>([]);
   const [subTab, setSubTab] = useState<"Upload" | "Download">("Upload");
 
@@ -36,22 +38,22 @@ export default function Finished() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <header style={styles.header}>
         <div style={{ display: "flex", gap: "24px", alignItems: "center" }}>
-          <h2 style={{...styles.tabTitle, color: subTab === "Upload" ? "#111827" : "#9ca3af", borderBottom: subTab === "Upload" ? "2px solid #111827" : "2px solid transparent"}} onClick={() => setSubTab("Upload")}>Uploaded</h2>
-          <h2 style={{...styles.tabTitle, color: subTab === "Download" ? "#111827" : "#9ca3af", borderBottom: subTab === "Download" ? "2px solid #111827" : "2px solid transparent"}} onClick={() => setSubTab("Download")}>Downloaded</h2>
+          <h2 style={{...styles.tabTitle, color: subTab === "Upload" ? "#111827" : "#9ca3af", borderBottom: subTab === "Upload" ? "2px solid #111827" : "2px solid transparent"}} onClick={() => setSubTab("Upload")}>{t("Uploaded")}</h2>
+          <h2 style={{...styles.tabTitle, color: subTab === "Download" ? "#111827" : "#9ca3af", borderBottom: subTab === "Download" ? "2px solid #111827" : "2px solid transparent"}} onClick={() => setSubTab("Download")}>{t("Downloaded")}</h2>
         </div>
-        <button style={styles.secondaryButton} onClick={clearHistory}>Clear History</button>
+        <button style={styles.secondaryButton} onClick={clearHistory}>{t("Clear History")}</button>
       </header>
 
       <div style={styles.listContainer}>
         <div style={styles.listHeaderRow}>
-          <div style={styles.cellName}>File Name</div>
-          <div style={styles.cellDefault}>Operation</div>
-          <div style={styles.cellDefault}>Status</div>
-          <div style={styles.cellDefault}>Time</div>
+          <div style={styles.cellName}>{t("File Name")}</div>
+          <div style={styles.cellDefault}>{t("Operation")}</div>
+          <div style={styles.cellDefault}>{t("Status")}</div>
+          <div style={styles.cellDefault}>{t("Time")}</div>
         </div>
 
         {displayedTasks.length === 0 ? (
-          <div style={styles.statusState}>No {subTab.toLowerCase()} history found.</div>
+          <div style={styles.statusState}>{t("No history found.")}</div>
         ) : (
           <div style={styles.listBody}>
             {displayedTasks.map((task) => (

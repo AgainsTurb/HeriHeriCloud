@@ -5,8 +5,10 @@ import { getFileIcon } from "../Utils/fileIcons";
 import { useFileSelection } from "../Hooks/useFileSelection";
 import { useRectangleSelect } from "../Hooks/useRectangleSelect";
 import { useContextMenu } from "../Hooks/useContextMenu";
+import { useTranslation } from "react-i18next";
 
 export default function Bin() {
+  const { t } = useTranslation();
   const [nodes, setNodes] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -119,23 +121,23 @@ export default function Bin() {
     >
       <header style={styles.header}>
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-          <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px" }}>Recycle Bin</h2>
+          <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px" }}>{t("Recycle Bin")}</h2>
         </div>
         <div style={styles.headerActions}></div>
       </header>
 
       <div style={styles.listContainer} ref={containerRef}>
         <div style={styles.listHeaderRow}>
-          <div style={styles.cellName}>Name</div>
-          <div style={styles.cellDefault}>Size</div>
-          <div style={styles.cellDefault}>Deleted Time</div>
-          <div style={styles.cellDefault}>MD5 Hash</div>
-          <div style={styles.cellActions}>Actions</div>
+          <div style={styles.cellName}>{t("Name")}</div>
+          <div style={styles.cellDefault}>{t("Size")}</div>
+          <div style={styles.cellDefault}>{t("Deleted Time")}</div>
+          <div style={styles.cellDefault}>{t("MD5 Hash")}</div>
+          <div style={styles.cellActions}>{t("Actions")}</div>
         </div>
 
-        {isLoading && <div style={styles.statusState}>SYNCING & LOADING...</div>}
+        {isLoading && <div style={styles.statusState}>{t("SYNCING & LOADING...")}</div>}
         {!isLoading && nodes.length === 0 && (
-          <div style={styles.statusState}>The Recycle Bin is empty.</div>
+          <div style={styles.statusState}>{t("The Recycle Bin is empty.")}</div>
         )}
 
         {!isLoading && nodes.length > 0 && (
@@ -228,7 +230,7 @@ export default function Bin() {
             <h3 style={styles.modalTitle}>{alertData.title}</h3>
             <p style={styles.modalText}>{alertData.msg}</p>
             <div style={styles.modalActions}>
-              <button style={styles.primaryButton} onClick={() => setAlertData(null)}>OK</button>
+              <button style={styles.primaryButton} onClick={() => setAlertData(null)}>{t("OK")}</button>
             </div>
           </div>
         </div>
@@ -237,13 +239,13 @@ export default function Bin() {
       {showDeleteModal && (
         <div style={styles.modalOverlay} onClick={() => setShowDeleteModal(false)}>
           <div style={styles.modalBox} onClick={(e) => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>Delete Permanently?</h3>
+            <h3 style={styles.modalTitle}>{t("Delete Permanently?")}</h3>
             <p style={styles.modalText}>
-              Are you sure you want to permanently delete <strong>{idsToDelete.length} item(s)</strong>? This action cannot be undone and files cannot be recovered.
+              {t("Are you sure you want to permanently delete ")}<strong>{idsToDelete.length} {t("item(s)")}</strong>{t("? This action cannot be undone and files cannot be recovered.")}
             </p>
             <div style={styles.modalActions}>
-              <button style={styles.secondaryButton} onClick={() => setShowDeleteModal(false)}>Cancel</button>
-              <button style={styles.dangerButton} onClick={() => hardDeleteItems(idsToDelete)}>Delete</button>
+              <button style={styles.secondaryButton} onClick={() => setShowDeleteModal(false)}>{t("Cancel")}</button>
+              <button style={styles.dangerButton} onClick={() => hardDeleteItems(idsToDelete)}>{t("Delete")}</button>
             </div>
           </div>
         </div>
@@ -252,13 +254,13 @@ export default function Bin() {
       {showEmptyBinModal && (
         <div style={styles.modalOverlay} onClick={() => setShowEmptyBinModal(false)}>
           <div style={styles.modalBox} onClick={(e) => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>Empty Recycle Bin?</h3>
+            <h3 style={styles.modalTitle}>{t("Empty Recycle Bin?")}</h3>
             <p style={styles.modalText}>
-              Are you sure you want to permanently delete <strong>all {nodes.length} items</strong> in the Recycle Bin?
+              {t("Are you sure you want to permanently delete ")}<strong>{t("all")} {nodes.length} {t("items")}</strong> {t("in the Recycle Bin?")}
             </p>
             <div style={styles.modalActions}>
-              <button style={styles.secondaryButton} onClick={() => setShowEmptyBinModal(false)}>Cancel</button>
-              <button style={styles.dangerButton} onClick={() => hardDeleteItems(nodes.map(n => n.id))}>Empty Bin</button>
+              <button style={styles.secondaryButton} onClick={() => setShowEmptyBinModal(false)}>{t("Cancel")}</button>
+              <button style={styles.dangerButton} onClick={() => hardDeleteItems(nodes.map(n => n.id))}>{t("Empty Bin")}</button>
             </div>
           </div>
         </div>
@@ -273,14 +275,14 @@ export default function Bin() {
         >
           {contextMenu.targetId === null ? (
             <>
-              <div style={styles.contextMenuItem} onClick={async () => { closeMenu(); setIsLoading(true); await invoke("vfs_sync_pull").catch((err) => console.warn("Sync pull skipped:", err)); await fetchBin(); }}>Refresh</div>
-              <div style={styles.contextMenuItem} onClick={() => { setShowEmptyBinModal(true); closeMenu(); }}>Empty Bin</div>
-              <div style={styles.contextMenuItem} onClick={() => { setSelectedNodes(new Set(visibleNodes.map(n => n.id))); closeMenu(); }}>Select All</div>
+              <div style={styles.contextMenuItem} onClick={async () => { closeMenu(); setIsLoading(true); await invoke("vfs_sync_pull").catch((err) => console.warn("Sync pull skipped:", err)); await fetchBin(); }}>{t("Refresh")}</div>
+              <div style={styles.contextMenuItem} onClick={() => { setShowEmptyBinModal(true); closeMenu(); }}>{t("Empty Bin")}</div>
+              <div style={styles.contextMenuItem} onClick={() => { setSelectedNodes(new Set(visibleNodes.map(n => n.id))); closeMenu(); }}>{t("Select All")}</div>
             </>
           ) : (
             <>
-              <div style={styles.contextMenuItem} onClick={() => { restoreItems(Array.from(selectedNodes)); closeMenu(); }}>Restore</div>
-              <div style={{...styles.contextMenuItem, color: "#ef4444"}} onClick={() => { triggerBatchDelete(); closeMenu(); }}>Delete</div>
+              <div style={styles.contextMenuItem} onClick={() => { restoreItems(Array.from(selectedNodes)); closeMenu(); }}>{t("Restore")}</div>
+              <div style={{...styles.contextMenuItem, color: "#ef4444"}} onClick={() => { triggerBatchDelete(); closeMenu(); }}>{t("Delete")}</div>
             </>
           )}
         </div>
