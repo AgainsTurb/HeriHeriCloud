@@ -1052,6 +1052,9 @@ fn rebuild_folder_recursive<'a>(
                     new_parent_lanzou_id.clone(),
                 )
                 .await?;
+
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
             let cloned_lanzou_id = res["text"].as_str().unwrap_or("").to_string();
             if cloned_lanzou_id.is_empty() {
                 return Err("Failed to create rebuilt folder on cloud".to_string());
@@ -1074,6 +1077,8 @@ fn rebuild_folder_recursive<'a>(
             // Delete the old folder from Lanzou
             let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
 
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
             // Update the VFS tree to point to the new Lanzou ID and Parent PID
             if let Some(mut_node) = tree.nodes.get_mut(&node_id) {
                 mut_node.pid = new_parent_pid;
@@ -1084,6 +1089,9 @@ fn rebuild_folder_recursive<'a>(
             if node.lanzou_id.starts_with("alien://") {
             } else if node.chunks != "1" && !node.chunks.is_empty() {
                 let res = lanzou.create_folder_in_target(node.md5.clone(), "".to_string(), new_parent_lanzou_id.clone()).await?;
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
                 let new_chunk_folder_id = res["text"].as_str().unwrap_or("").to_string();
                 
                 if !new_chunk_folder_id.is_empty() {
@@ -1091,10 +1099,15 @@ fn rebuild_folder_recursive<'a>(
                         for part in parts {
                             if let Some(fid) = part["id"].as_str() {
                                 let _ = lanzou.move_item(fid.to_string(), new_chunk_folder_id.clone()).await;
+
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                             }
                         }
                     }
                     let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
+
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
                     if let Some(mut_node) = tree.nodes.get_mut(&node_id) {
                         mut_node.lanzou_id = new_chunk_folder_id;
                     }
@@ -1104,6 +1117,8 @@ fn rebuild_folder_recursive<'a>(
                 let _ = lanzou
                     .move_item(node.lanzou_id.clone(), new_parent_lanzou_id)
                     .await;
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
 
             // Update the VFS tree
@@ -1754,6 +1769,8 @@ pub async fn vfs_batch_delete(
                     let _ = lanzou.delete_file(node.lanzou_id).await;
                 }
 
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
                 if let Some(mut_node) = tree.nodes.get_mut(&id) {
                     mut_node.is_trashed = true;
                     mut_node.time = now;
@@ -1798,6 +1815,9 @@ pub async fn vfs_move_items(
                 if node.lanzou_id.starts_with("alien://") {
                 } else if node.chunks != "1" && !node.chunks.is_empty() {
                     let res = lanzou.create_folder_in_target(node.md5.clone(), "".to_string(), target_lanzou_id.clone()).await?;
+
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
                     let new_chunk_folder_id = res["text"].as_str().unwrap_or("").to_string();
                     
                     if !new_chunk_folder_id.is_empty() {
@@ -1806,12 +1826,15 @@ pub async fn vfs_move_items(
                             for part in parts {
                                 if let Some(fid) = part["id"].as_str() {
                                     let _ = lanzou.move_item(fid.to_string(), new_chunk_folder_id.clone()).await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                                 }
                             }
                         }
                         // Delete old wrapper folder
                         let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
-                        // Update VFS pointer to the new wrapper folder
+
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        
                         if let Some(mut_node) = tree.nodes.get_mut(&id) {
                             mut_node.lanzou_id = new_chunk_folder_id;
                         }
@@ -1821,6 +1844,8 @@ pub async fn vfs_move_items(
                     let _ = lanzou
                         .move_item(node.lanzou_id.clone(), target_lanzou_id.clone())
                         .await;
+
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
 
                 // Update the parent ID in our local VFS SQLite/JSON immediately
@@ -1885,6 +1910,8 @@ pub async fn vfs_restore_items(
                     .await
                     .unwrap_or(false)
                 {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
                     if !is_physical_folder {
                         let target_lanzou_id = if node.pid == 0 {
                             tree.root_lanzou_id.clone()
@@ -1897,6 +1924,8 @@ pub async fn vfs_restore_items(
                         let _ = lanzou
                             .move_item(node.lanzou_id.clone(), target_lanzou_id)
                             .await;
+
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     }
 
                     if let Some(mut_node) = tree.nodes.get_mut(&id) {
@@ -1923,7 +1952,6 @@ pub async fn vfs_hard_delete_items(
     let mut vfs_guard = state.vfs.lock().await;
 
     if let Some(tree) = vfs_guard.as_mut() {
-        // MINIMUM FIX: Recursively find all children, sorted DEEPEST FIRST (Bottom-Up)
         let targets = get_descendants(tree, &ids, false);
 
         for id in targets {
@@ -1941,6 +1969,8 @@ pub async fn vfs_hard_delete_items(
                     let _ = lanzou
                         .hard_delete_item(&node.lanzou_id, is_physical_folder, &formhash)
                         .await;
+
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
             }
         }

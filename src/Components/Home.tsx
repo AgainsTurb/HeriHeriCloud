@@ -149,38 +149,48 @@ export default function Home({ status }: { status: string }) {
       const droppedPaths: string[] = event.payload.paths;
       if (!droppedPaths || droppedPaths.length === 0) return;
 
+      showAlert(t("Processing"), t("Scanning folder structure... Please wait."));
       setIsLoading(true);
+
       const currentPid = await invoke<number>("vfs_get_current_pid").catch(() => 0);
-      const safeFiles = await invoke<any[]>("vfs_expand_drop", { paths: droppedPaths, currentPid }).catch(() => []);
       
-      if (safeFiles.length > 0) {
-        const activeTasks = JSON.parse(localStorage.getItem("heriheri_active") || "[]");
-        const groups = new Map();
+      try {
+        const safeFiles = await invoke<any[]>("vfs_expand_drop", { paths: droppedPaths, currentPid });
+        
+        if (safeFiles.length > 0) {
+          const activeTasks = JSON.parse(localStorage.getItem("heriheri_active") || "[]");
+          const groups = new Map();
 
-        safeFiles.forEach((f: any) => {
-          if (f.groupId) {
-            if (!groups.has(f.groupId)) {
-              groups.set(f.groupId, {
-                id: f.groupId, isGroup: true, name: f.groupName, status: "Queued", totalItems: 0, finishedItems: 0, type: "Upload"
-              });
+          safeFiles.forEach((f: any) => {
+            if (f.groupId) {
+              if (!groups.has(f.groupId)) {
+                groups.set(f.groupId, {
+                  id: f.groupId, isGroup: true, name: f.groupName, status: "Queued", totalItems: 0, finishedItems: 0, type: "Upload"
+                });
+              }
+              groups.get(f.groupId).totalItems += 1;
             }
-            groups.get(f.groupId).totalItems += 1;
-          }
-        });
-        groups.forEach(g => activeTasks.push(g));
-
-        safeFiles.forEach((fileObj: any) => {
-          const fileName = fileObj.path.split(/[/\\]/).pop() || "Unknown File";
-          const taskId = "t_" + Date.now().toString() + Math.random().toString(36).substring(2, 7);
-          activeTasks.push({ 
-            id: taskId, groupId: fileObj.groupId, isGroup: false, name: fileName, type: "Upload", status: "Queued", 
-            filePath: fileObj.path, targetPid: fileObj.targetPid, resumeFolder: "", resumeChunk: 0 
           });
-        });
+          groups.forEach(g => activeTasks.push(g));
 
-        localStorage.setItem("heriheri_active", JSON.stringify(activeTasks));
-        window.dispatchEvent(new CustomEvent("TASK_START"));
-        showAlert("Upload Queued", `Items added to the queue.`);
+          safeFiles.forEach((fileObj: any) => {
+            const fileName = fileObj.path.split(/[/\\]/).pop() || "Unknown File";
+            const taskId = "t_" + Date.now().toString() + Math.random().toString(36).substring(2, 7);
+            activeTasks.push({ 
+              id: taskId, groupId: fileObj.groupId, isGroup: false, name: fileName, type: "Upload", status: "Queued", 
+              filePath: fileObj.path, targetPid: fileObj.targetPid, resumeFolder: "", resumeChunk: 0 
+            });
+          });
+
+          localStorage.setItem("heriheri_active", JSON.stringify(activeTasks));
+          window.dispatchEvent(new CustomEvent("TASK_START"));
+          
+          showAlert(t("Upload Queued"), `${safeFiles.length} ${t("items added to the queue.")}`);
+        } else {
+          setAlertData(null); // Clear alert if empty drop
+        }
+      } catch (err) {
+        showAlert(t("Drop Error"), t("Failed to process folder: ") + String(err));
       }
       
       fetchDirectory();
