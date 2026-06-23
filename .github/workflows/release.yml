@@ -1,0 +1,71 @@
+name: "Publish Release"
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers the workflow when you push a version tag like v1.0.0
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "macos-latest" # Builds for macOS (Apple Silicon natively, setup for Universal)
+            args: "--target universal-apple-darwin"
+          - platform: "ubuntu-22.04" # Builds for Linux amd64
+            args: ""
+          - platform: "windows-latest" # Builds for Windows amd64
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm' # Change to 'yarn' or 'pnpm' if you use them
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Add targets required for cross-compiling (like macOS universal)
+          targets: ${{ matrix.platform == 'macos-latest' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            webkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev
+
+      - name: Install frontend dependencies
+        run: npm install # Change to yarn install or pnpm install if applicable
+
+      - name: Build Tauri Application & Create Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "HeriHeri v__VERSION__" # "__VERSION__" is automatically replaced by your package.json version
+          releaseBody: "Automated production release for HeriHeri. See the attached assets for your operating system."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
