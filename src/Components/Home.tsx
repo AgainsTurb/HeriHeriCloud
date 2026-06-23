@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useTranslation } from "react-i18next";
 import { getFileIcon } from "../Utils/fileIcons";
 
@@ -11,7 +12,7 @@ import { useFileSelection } from "../Hooks/useFileSelection";
 import { useRectangleSelect } from "../Hooks/useRectangleSelect";
 import { useContextMenu } from "../Hooks/useContextMenu";
 
-function FileRowNode({ node, index, isSelected, isCut, formatTime, handleRowClick, navigateToFolder, triggerShare, setShowBatchDelete, setSelectedNodes, handleContextMenu }: any) {
+function FileRowNode({ node, index, isSelected, isCut, formatTime, formatBytes, handleRowClick, navigateToFolder, triggerShare, setShowBatchDelete, setSelectedNodes, handleContextMenu, openMediaWindow }: any) {
   const isDir = node.node_type === "Directory";
 
   const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
@@ -48,7 +49,15 @@ function FileRowNode({ node, index, isSelected, isCut, formatTime, handleRowClic
       onClick={(e) => handleRowClick(e, index, node.id)}
       onDoubleClick={(e) => {
         e.stopPropagation();
-        if (isDir) navigateToFolder(node.id);
+        if (isDir) {
+          navigateToFolder(node.id);
+        } else {
+          const ext = node.name.split('.').pop()?.toLowerCase();
+          const mediaExts = ['mp4', 'mkv', 'webm', 'ogg', 'mp3', 'wav', 'flac', 'm4a', 'aac'];
+          if (mediaExts.includes(ext)) {
+            openMediaWindow(node);
+          }
+        }
       }}
       onContextMenu={(e) => {
         if (!isSelected) setSelectedNodes(new Set([node.id]));
@@ -59,11 +68,10 @@ function FileRowNode({ node, index, isSelected, isCut, formatTime, handleRowClic
         <img src={getFileIcon(node.name, isDir)} alt="icon" style={styles.icon} />
         <span style={{...styles.itemName, color: "#111827"}}>{node.name}</span>
       </div>
-      <div style={styles.cellDefault}>{isDir ? "-" : node.size}</div>
+      <div style={styles.cellDefault}>{isDir ? "-" : formatBytes(node.size)}</div>
       <div style={styles.cellDefault}>{formatTime(node.time)}</div>
       <div style={{...styles.cellDefault, fontSize: "11px", fontFamily: "monospace"}}>{isDir ? "-" : node.md5.substring(0, 16) + "..."}</div>
       <div style={styles.cellActions}>
-        {/* --- MINIMUM FIX: Cold, angular SVG icons instead of text --- */}
         <button style={styles.actionBtn} title="Share" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => triggerShare(e, node.id)}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13"/></svg>
         </button>
@@ -200,11 +208,12 @@ export default function Home({ status }: { status: string }) {
   }, [status]);
 
   const showAlert = (title: string, msg: string) => setAlertData({ title, msg });
+  const currentPhone = localStorage.getItem("phone") || "";
 
   async function initializeDrive() {
     setIsLoading(true);
     try {
-      await invoke("init_vfs_root");
+      await invoke("init_vfs_root", { phone: currentPhone });
       await invoke("vfs_sync_pull").catch((e) => console.warn("Sync pull skipped:", e));
       await fetchDirectory();
     } catch (error) {
@@ -227,6 +236,28 @@ export default function Home({ status }: { status: string }) {
       setIsLoading(false);
     }
   }
+
+  const openMediaWindow = async (node: any) => {
+    const streamUrl = encodeURIComponent(`http://127.0.0.1:8888/stream/${node.id}`);
+    const title = encodeURIComponent(node.name);
+    const isAudio = ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'].includes(node.name.split('.').pop()?.toLowerCase() || '');
+
+    // Note the /#/ syntax here! This tells HashRouter to load the MediaPlayer.
+    const routeUrl = `index.html#/player?url=${streamUrl}&title=${title}&isAudio=${isAudio}`;
+
+    const playerWindow = new WebviewWindow(`player-${node.id}`, {
+      url: routeUrl,
+      title: `Playing: ${node.name}`,
+      width: 854,
+      height: isAudio ? 200 : 480,
+      center: true,
+      resizable: true,
+    });
+
+    playerWindow.once('tauri://error', function (e) {
+      console.warn("Window might already exist. Focusing instead.");
+    });
+  };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -384,6 +415,24 @@ export default function Home({ status }: { status: string }) {
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   }
 
+  function formatBytes(sizeStr: string) {
+    if (!sizeStr || sizeStr === "-") return "-";
+    
+    // If it's a legacy file from Lanzou with letters (e.g., "1.2 M" or "300 K"), return as-is
+    if (/[a-zA-Z]/.test(sizeStr)) return sizeStr;
+
+    // Otherwise, parse the exact bytes and format beautifully
+    const bytes = parseInt(sizeStr, 10);
+    if (isNaN(bytes)) return sizeStr;
+    if (bytes === 0) return "0 B";
+
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  }
+
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <div 
@@ -434,12 +483,14 @@ export default function Home({ status }: { status: string }) {
                   isSelected={selectedNodes.has(node.id)}
                   isCut={clipboard?.ids.includes(node.id)}
                   formatTime={formatTime}
+                  formatBytes={formatBytes}
                   handleRowClick={handleRowClick}
                   navigateToFolder={navigateToFolder}
                   triggerShare={triggerShare}
                   setShowBatchDelete={setShowBatchDelete}
                   setSelectedNodes={setSelectedNodes}
                   handleContextMenu={handleContextMenu}
+                  openMediaWindow={openMediaWindow}
                 />
               ))}
             </div>

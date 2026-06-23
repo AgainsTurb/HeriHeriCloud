@@ -3,13 +3,21 @@
   "identifier": "default",
   "description": "Capability for the main window",
   "windows": [
-    "main"
+    "*"
+  ],
+  "webviews": [
+    "*"
   ],
   "permissions": [
     "core:default",
     "opener:default",
     "dialog:default",
     "dialog:allow-open",
-    "notification:default"
+    "notification:default",
+    "core:window:allow-create",
+    "core:window:allow-center",
+    "core:window:allow-set-size",
+    "core:window:allow-set-title",
+    "core:webview:allow-create-webview-window"
   ]
 }

@@ -37,6 +37,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+    if (config.enableWebDAV) {
+      invoke("vfs_start_webdav", { port: config.webdavPort || 8765 }).catch(console.error);
+    }
+  }, []);
+
+  useEffect(() => {
     if (countdown > 0) {
       const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
       return () => clearTimeout(timer);

@@ -103,7 +103,7 @@ fn encrypt_payload(json_str: &str) -> String {
     URL_SAFE_NO_PAD.encode(payload)
 }
 
-fn decrypt_payload(encoded: &str) -> Result<String, String> {
+pub fn decrypt_payload(encoded: &str) -> Result<String, String> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     
     let decoded = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| "Invalid Base64")?;
@@ -971,16 +971,17 @@ impl LanzouCloud {
 // Tauri Commands
 // --------------------------------------------------------
 
+#[derive(Clone)]
 pub struct AppState {
-    pub lanzou: Mutex<LanzouCloud>,
-    pub downloader: Mutex<crate::lanzou_down::LanzouDownloader>,
-    pub vfs: Mutex<Option<VfsTree>>,
-    pub pid_stack: Mutex<Vec<u64>>,
-    pub task_ctrl: Mutex<HashMap<String, Arc<AtomicU8>>>,
-    pub sync_lock: Mutex<()>,
+    pub lanzou: Arc<tokio::sync::Mutex<LanzouCloud>>,
+    pub downloader: Arc<tokio::sync::Mutex<crate::lanzou_down::LanzouDownloader>>,
+    pub vfs: Arc<tokio::sync::Mutex<Option<VfsTree>>>,
+    pub pid_stack: Arc<tokio::sync::Mutex<Vec<u64>>>,
+    pub task_ctrl: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU8>>>>,
+    pub sync_lock: Arc<tokio::sync::Mutex<()>>,
     pub upload_limit: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub download_limit: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    pub current_phone: Mutex<String>,
+    pub current_phone: Arc<tokio::sync::Mutex<String>>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -1053,7 +1054,7 @@ fn rebuild_folder_recursive<'a>(
                 )
                 .await?;
 
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
             let cloned_lanzou_id = res["text"].as_str().unwrap_or("").to_string();
             if cloned_lanzou_id.is_empty() {
@@ -1077,7 +1078,7 @@ fn rebuild_folder_recursive<'a>(
             // Delete the old folder from Lanzou
             let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
 
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
             // Update the VFS tree to point to the new Lanzou ID and Parent PID
             if let Some(mut_node) = tree.nodes.get_mut(&node_id) {
@@ -1090,7 +1091,7 @@ fn rebuild_folder_recursive<'a>(
             } else if node.chunks != "1" && !node.chunks.is_empty() {
                 let res = lanzou.create_folder_in_target(node.md5.clone(), "".to_string(), new_parent_lanzou_id.clone()).await?;
 
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                 let new_chunk_folder_id = res["text"].as_str().unwrap_or("").to_string();
                 
@@ -1100,13 +1101,13 @@ fn rebuild_folder_recursive<'a>(
                             if let Some(fid) = part["id"].as_str() {
                                 let _ = lanzou.move_item(fid.to_string(), new_chunk_folder_id.clone()).await;
 
-                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             }
                         }
                     }
                     let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
 
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                     if let Some(mut_node) = tree.nodes.get_mut(&node_id) {
                         mut_node.lanzou_id = new_chunk_folder_id;
@@ -1118,7 +1119,7 @@ fn rebuild_folder_recursive<'a>(
                     .move_item(node.lanzou_id.clone(), new_parent_lanzou_id)
                     .await;
 
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
 
             // Update the VFS tree
@@ -1184,13 +1185,20 @@ pub async fn set_lanzou_cookies(
 }
 
 #[tauri::command]
-pub async fn init_vfs_root(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+pub async fn init_vfs_root(phone: String, app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut current_phone = state.current_phone.lock().await;
+        *current_phone = phone.clone();
+    }
 
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
 
-    let phone = state.current_phone.lock().await.clone();
-    let file_name = if phone.is_empty() { "heriheri_tree.txt".to_string() } else { format!("heriheri_tree_{}.txt", phone) };
+    let file_name = if phone.is_empty() { 
+        "heriheri_tree.txt".to_string() 
+    } else { 
+        format!("heriheri_tree_{}.txt", phone) 
+    };
     let tree_path = app_data_dir.join(file_name);
 
     let mut lanzou = state.lanzou.lock().await;
@@ -1336,7 +1344,7 @@ pub async fn vfs_upload_file(
     let (bytes, md5_str, total_size, size_str) = tokio::task::spawn_blocking(move || {
         let b = std::fs::read(&path).map_err(|e| e.to_string())?;
         let t = b.len();
-        let s = format!("{:.2} MB", t as f64 / 1_048_576.0);
+        let s = t.to_string();
         let h = md5::compute(&b);
         let m = format!("{:x}", h);
         Ok::<_, String>((b, m, t, s))
@@ -1659,6 +1667,8 @@ pub async fn vfs_expand_drop(
                 Err(_) => current_pid,
             };
 
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
             let group_id = Some(format!(
                 "g_{}_{}",
                 std::time::SystemTime::now()
@@ -1693,6 +1703,8 @@ pub async fn vfs_expand_drop(
                                     Ok(id) => id,
                                     Err(_) => pid,
                                 };
+                            
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             dirs_to_process.push((p, child_pid));
                         }
                     }
@@ -1769,7 +1781,7 @@ pub async fn vfs_batch_delete(
                     let _ = lanzou.delete_file(node.lanzou_id).await;
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                 if let Some(mut_node) = tree.nodes.get_mut(&id) {
                     mut_node.is_trashed = true;
@@ -1816,7 +1828,7 @@ pub async fn vfs_move_items(
                 } else if node.chunks != "1" && !node.chunks.is_empty() {
                     let res = lanzou.create_folder_in_target(node.md5.clone(), "".to_string(), target_lanzou_id.clone()).await?;
 
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                     let new_chunk_folder_id = res["text"].as_str().unwrap_or("").to_string();
                     
@@ -1826,14 +1838,14 @@ pub async fn vfs_move_items(
                             for part in parts {
                                 if let Some(fid) = part["id"].as_str() {
                                     let _ = lanzou.move_item(fid.to_string(), new_chunk_folder_id.clone()).await;
-                                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                                 }
                             }
                         }
                         // Delete old wrapper folder
                         let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
 
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         
                         if let Some(mut_node) = tree.nodes.get_mut(&id) {
                             mut_node.lanzou_id = new_chunk_folder_id;
@@ -1845,7 +1857,7 @@ pub async fn vfs_move_items(
                         .move_item(node.lanzou_id.clone(), target_lanzou_id.clone())
                         .await;
 
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
 
                 // Update the parent ID in our local VFS SQLite/JSON immediately
@@ -1910,7 +1922,7 @@ pub async fn vfs_restore_items(
                     .await
                     .unwrap_or(false)
                 {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                     if !is_physical_folder {
                         let target_lanzou_id = if node.pid == 0 {
@@ -1925,7 +1937,7 @@ pub async fn vfs_restore_items(
                             .move_item(node.lanzou_id.clone(), target_lanzou_id)
                             .await;
 
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
 
                     if let Some(mut_node) = tree.nodes.get_mut(&id) {
@@ -1970,7 +1982,7 @@ pub async fn vfs_hard_delete_items(
                         .hard_delete_item(&node.lanzou_id, is_physical_folder, &formhash)
                         .await;
 
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             }
         }

@@ -21,6 +21,8 @@ export default function Settings() {
       notifyUpload: true,
       notifyDownload: true,
       notifySound: false,
+      enableWebDAV: false,
+      webdavPort: 8765,
     };
   });
 
@@ -30,6 +32,8 @@ export default function Settings() {
     const upLimit = settings.unlimitedUpload ? 0 : settings.uploadSpeedLimit;
     const downLimit = settings.unlimitedDownload ? 0 : settings.downloadSpeedLimit;
     await invoke("vfs_update_speed_limits", { uploadLimit: upLimit, downloadLimit: downLimit }).catch(console.error);
+
+    alert(t("Configuration Saved!"));
   };
 
   return (
@@ -75,7 +79,7 @@ export default function Settings() {
               </div>
             </div>
           )}
-          
+
           {activeTab === "Transfer" && (
             <div style={styles.section}>
               <h3 style={styles.sectionTitle}>{t("Concurrent Tasks")}</h3>

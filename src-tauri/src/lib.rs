@@ -1,6 +1,7 @@
 mod heriheri;
 mod lanzou;
 mod lanzou_down;
+mod webdav;
 use lanzou::{
     init_vfs_root, login, request_register_sms, set_lanzou_cookies, submit_register,
     vfs_batch_delete, vfs_control_task, vfs_create_folder, vfs_delete_item, vfs_download_file,
@@ -11,25 +12,36 @@ use lanzou::{
     vfs_resolve_share_code, vfs_rent_item
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::Mutex;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let app_state = AppState {
+        lanzou: Arc::new(Mutex::new(LanzouCloud::new())),
+        downloader: Arc::new(Mutex::new(crate::lanzou_down::LanzouDownloader::new())),
+        vfs: Arc::new(Mutex::new(None)),
+        pid_stack: Arc::new(Mutex::new(Vec::new())),
+        task_ctrl: Arc::new(Mutex::new(HashMap::new())),
+        sync_lock: Arc::new(tokio::sync::Mutex::new(())),
+        upload_limit: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        download_limit: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        current_phone: Arc::new(tokio::sync::Mutex::new(String::new())),
+    };
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
-        .manage(AppState {
-            lanzou: Mutex::new(LanzouCloud::new()),
-            downloader: Mutex::new(crate::lanzou_down::LanzouDownloader::new()),
-            vfs: Mutex::new(None),
-            pid_stack: Mutex::new(Vec::new()),
-            task_ctrl: Mutex::new(HashMap::new()),
-            sync_lock: tokio::sync::Mutex::new(()),
-            upload_limit: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            download_limit: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            current_phone: tokio::sync::Mutex::new(String::new()),
-        })
+        .manage(app_state)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let state_clone = app.state::<AppState>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                crate::webdav::run_server(state_clone).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             set_lanzou_cookies,
             login,
