@@ -37,9 +37,27 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+    // 1. Read from disk or fallback to the system defaults immediately
+    const saved = localStorage.getItem("heriheri_config");
+    const config = saved ? JSON.parse(saved) : {
+      enableWebDAV: true,
+      webdavPort: 8888,
+      webdavUser: "admin",
+      webdavPass: "admin",
+    };
+    
+    // 2. If it's a first-time boot, commit these defaults to disk so the file exists
+    if (!saved) {
+      localStorage.setItem("heriheri_config", JSON.stringify(config));
+    }
+    
+    // 3. Fire the ignition command to Rust
     if (config.enableWebDAV) {
-      invoke("vfs_start_webdav", { port: config.webdavPort || 8765 }).catch(console.error);
+      invoke("boot_webdav_server", {
+        port: Number(config.webdavPort) || 8888,
+        username: config.webdavUser || "admin",
+        password: config.webdavPass || "admin"
+      }).catch(err => console.error("Failed to boot WebDAV:", err));
     }
   }, []);
 

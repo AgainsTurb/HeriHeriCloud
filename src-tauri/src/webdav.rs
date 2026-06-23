@@ -13,11 +13,14 @@ use axum::{
 use axum::http::{StatusCode, header};
 use reqwest::Client;
 use tokio::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::lanzou::{AppState, SharePayload};
 
 const CHUNK_SIZE: usize = 100 * 1024 * 1024; 
 const PREFETCH_CLAMP: usize = 2 * 1024 * 1024; 
+
+static SERVER_STARTED: AtomicBool = AtomicBool::new(false);
 
 // ========================================================
 // MEMORY CACHE ENGINE
@@ -34,6 +37,28 @@ static URL_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<u64, CachedMedia>>>> = s
 
 fn get_cache() -> Arc<Mutex<HashMap<u64, CachedMedia>>> {
     URL_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+}
+
+// ========================================================
+// WEBDAV CONFIGURATION
+// ========================================================
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct WebdavConfig {
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+}
+
+static WEBDAV_CONFIG: std::sync::OnceLock<Arc<tokio::sync::Mutex<WebdavConfig>>> = std::sync::OnceLock::new();
+
+pub fn get_config() -> Arc<tokio::sync::Mutex<WebdavConfig>> {
+    WEBDAV_CONFIG.get_or_init(|| {
+        Arc::new(tokio::sync::Mutex::new(WebdavConfig {
+            port: 8888,
+            username: "admin".to_string(),
+            password: "admin".to_string(),
+        }))
+    }).clone()
 }
 
 // ========================================================
@@ -121,9 +146,13 @@ pub async fn run_server(state: AppState) {
         .fallback(fallback_logger)
         .with_state(shared_state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8888").await.unwrap();
-    println!("[PROXY] Local Video Streaming Proxy listening on port 8888");
-    println!("[PROXY] WebDAV Mount available at http://127.0.0.1:8888/dav (User: admin, Pass: admin)");
+    let config_arc = get_config();
+    let config = config_arc.lock().await.clone();
+    let port = config.port;
+
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+    println!("[PROXY] Local Video Streaming Proxy listening on port {}", port);
+    println!("[PROXY] WebDAV Mount available at http://127.0.0.1:{}/dav (User: {}, Pass: {})", port, config.username, config.password);
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -171,12 +200,20 @@ async fn handle_dav_dispatch(
     headers: HeaderMap,
 ) -> Response {
     println!("\n[WEBDAV] ==========================================");
-    println!("[WEBDAV] 📥 INCOMING REQUEST: {} {}", method, uri);
-    println!("[WEBDAV] 🪪 Auth Header Present: {}", headers.contains_key(header::AUTHORIZATION));
+    println!("[WEBDAV] INCOMING REQUEST: {} {}", method, uri);
+    println!("[WEBDAV] Auth Header Present: {}", headers.contains_key(header::AUTHORIZATION));
 
-    // 1. WebDAV Basic Auth check (admin : admin)
+    // 1. WebDAV Basic Auth check
+    let expected_auth = {
+        let config_arc = get_config();
+        let config = config_arc.lock().await;
+        let auth_raw = format!("{}:{}", config.username, config.password);
+        use base64::Engine;
+        format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(auth_raw))
+    };
+
     let auth = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
-    if auth != "Basic YWRtaW46YWRtaW4=" {
+    if auth != expected_auth {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header("WWW-Authenticate", "Basic realm=\"HeriHeri WebDAV\"")
@@ -216,10 +253,10 @@ async fn handle_dav_dispatch(
         if let Some(n) = found {
             current_id = n.id;
             is_dir = n.node_type == crate::heriheri::NodeType::Directory;
-            println!("[WEBDAV] ✔️ Found node: {} (ID: {})", n.name, n.id);
+            println!("[WEBDAV] Found node: {} (ID: {})", n.name, n.id);
             current_node = Some(n);
         } else {
-            println!("[WEBDAV] ❌ 404 NOT FOUND: Could not find '{}' under PID {}", decoded_part, current_id);
+            println!("[WEBDAV] 404 NOT FOUND: Could not find '{}' under PID {}", decoded_part, current_id);
             return StatusCode::NOT_FOUND.into_response();
         }
     }
@@ -349,11 +386,11 @@ async fn handle_stream(
     let media = match cached_media {
         Some(m) => m,
         None => {
-            println!("[PROXY] 🔍 Cache Miss. Resolving from Cloud...");
+            println!("[PROXY] Cache Miss. Resolving from Cloud...");
             let (chunks_str, share_url, file_pwd, total_size) = match resolve_lanzou_media(vfs_id, &state).await {
                 Ok(res) => res,
                 Err(e) => {
-                    println!("[PROXY] ❌ Failed to resolve metadata: {}", e);
+                    println!("[PROXY] Failed to resolve metadata: {}", e);
                     return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
                 }
             };
@@ -399,7 +436,7 @@ async fn handle_stream(
             };
 
             cache.lock().await.insert(vfs_id, new_entry.clone());
-            println!("[PROXY] ✅ Cloud Links Cached Successfully!");
+            println!("[PROXY] Cloud Links Cached Successfully!");
             new_entry
         }
     };
@@ -476,7 +513,7 @@ async fn handle_stream(
                         if retry > 0 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent CDN Error"))?; }
                         retry += 1;
                         
-                        println!("[PROXY] ⚠️ CDN Rejected Link (HTTP {}). Auto-refreshing cache...", resp.status());
+                        println!("[PROXY] CDN Rejected Link (HTTP {}). Auto-refreshing cache...", resp.status());
                         get_cache().lock().await.remove(&vfs_id);
                         
                         let (_, new_share_url, new_file_pwd, _) = resolve_lanzou_media(vfs_id, &state_clone)
@@ -493,7 +530,7 @@ async fn handle_stream(
                             expires_at: Instant::now() + Duration::from_secs(1800),
                         };
                         get_cache().lock().await.insert(vfs_id, new_entry);
-                        println!("[PROXY] 🔄 Cache Refreshed. Resuming stream.");
+                        println!("[PROXY] Cache Refreshed. Resuming stream.");
                     }
                 }
             }
@@ -534,7 +571,7 @@ async fn handle_stream(
                         if retry > 0 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent CDN Error"))?; }
                         retry += 1;
                         
-                        println!("[PROXY] ⚠️ CDN Rejected Chunk Link (HTTP {}). Auto-refreshing cache...", resp.status());
+                        println!("[PROXY] CDN Rejected Chunk Link (HTTP {}). Auto-refreshing cache...", resp.status());
                         get_cache().lock().await.remove(&vfs_id);
                         
                         let (_, new_share_url, new_file_pwd, _) = resolve_lanzou_media(vfs_id, &state_clone)
@@ -566,7 +603,7 @@ async fn handle_stream(
                             expires_at: Instant::now() + Duration::from_secs(1800),
                         };
                         get_cache().lock().await.insert(vfs_id, new_entry);
-                        println!("[PROXY] 🔄 Cache Refreshed. Resuming stream.");
+                        println!("[PROXY] Cache Refreshed. Resuming stream.");
                     }
                 }
             }
@@ -575,9 +612,40 @@ async fn handle_stream(
     };
 
     // --- 5. Return HTTP Headers ---
+    let ext = {
+        let vfs_guard = state.vfs.lock().await;
+        vfs_guard.as_ref()
+            .and_then(|t| t.nodes.get(&vfs_id))
+            .and_then(|n| n.name.split('.').last())
+            .unwrap_or("")
+            .to_lowercase()
+    };
+
+    let content_type = match ext.as_str() {
+        "mp4" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "txt" | "c" | "cpp" | "rs" | "py" | "js" | "ts" | "md" | "log" => "text/plain; charset=utf-8",
+        "json" => "application/json",
+        "xls" => "application/vnd.ms-excel",
+        "doc" => "application/msword",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    };
+
     let mut response_builder = Response::builder()
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CONTENT_TYPE, "video/mp4") 
+        .header(header::CONTENT_TYPE, content_type) 
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
 
     if is_partial {
@@ -592,4 +660,54 @@ async fn handle_stream(
     }
 
     response_builder.body(axum::body::Body::from_stream(body_stream)).unwrap()
+}
+
+// ========================================================
+// TAURI FRONTEND COMMANDS
+// ========================================================
+#[tauri::command]
+pub async fn get_webdav_config() -> Result<WebdavConfig, String> {
+    let config_arc = get_config();
+    let config = config_arc.lock().await.clone();
+    Ok(config)
+}
+
+#[tauri::command]
+pub async fn set_webdav_config(port: u16, username: String, password: String) -> Result<(), String> {
+    let config_arc = get_config();
+    let mut config = config_arc.lock().await;
+    config.port = port;
+    config.username = username;
+    config.password = password;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn boot_webdav_server(
+    port: u16, 
+    username: String, 
+    password: String, 
+    state: tauri::State<'_, AppState>
+) -> Result<(), String> {
+    // 1. Prevent the server from booting twice
+    if SERVER_STARTED.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    // 2. Overwrite the RAM config with the frontend's saved data
+    {
+        let config_arc = get_config();
+        let mut config = config_arc.lock().await;
+        config.port = port;
+        config.username = username;
+        config.password = password;
+    }
+
+    // 3. Clone the app state and ignite the Axum server in the background
+    let app_state = state.inner().clone(); 
+    tokio::spawn(async move {
+        run_server(app_state).await;
+    });
+
+    Ok(())
 }

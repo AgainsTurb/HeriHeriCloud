@@ -11,6 +11,7 @@ use lanzou::{
     vfs_upload_file, AppState, LanzouCloud, vfs_update_speed_limits, vfs_generate_share_code,
     vfs_resolve_share_code, vfs_rent_item
 };
+use webdav::{get_webdav_config, set_webdav_config, boot_webdav_server};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -35,13 +36,6 @@ pub fn run() {
         .manage(app_state)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
-            let state_clone = app.state::<AppState>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                crate::webdav::run_server(state_clone).await;
-            });
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
             set_lanzou_cookies,
             login,
@@ -72,7 +66,10 @@ pub fn run() {
             vfs_update_speed_limits,
             vfs_generate_share_code,
             vfs_resolve_share_code,
-            vfs_rent_item
+            vfs_rent_item,
+            get_webdav_config,
+            set_webdav_config,
+            boot_webdav_server
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -52,11 +52,7 @@ function FileRowNode({ node, index, isSelected, isCut, formatTime, formatBytes, 
         if (isDir) {
           navigateToFolder(node.id);
         } else {
-          const ext = node.name.split('.').pop()?.toLowerCase();
-          const mediaExts = ['mp4', 'mkv', 'webm', 'ogg', 'mp3', 'wav', 'flac', 'm4a', 'aac'];
-          if (mediaExts.includes(ext)) {
-            openMediaWindow(node);
-          }
+          openMediaWindow(node);
         }
       }}
       onContextMenu={(e) => {
@@ -238,23 +234,52 @@ export default function Home({ status }: { status: string }) {
   }
 
   const openMediaWindow = async (node: any) => {
+    const ext = node.name.split('.').pop()?.toLowerCase() || '';
+    
+    // Categorize extensions
+    const mediaExts = ['mp4', 'mkv', 'webm', 'ogg', 'mp3', 'wav', 'flac', 'm4a', 'aac'];
+    const imgExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
+    const textExts = ['txt', 'json', 'md', 'csv', 'py', 'js', 'ts', 'jsx', 'tsx', 'c', 'cpp', 'h', 'rs', 'log', 'xml'];
+    const docExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
+
+    let routePath = "";
+    let wHeight = 480;
+
+    // Determine Route and Window Size
+    if (mediaExts.includes(ext)) {
+      routePath = "player";
+      wHeight = ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'].includes(ext) ? 200 : 480;
+    } else if (imgExts.includes(ext)) {
+      routePath = "image";
+      wHeight = 650;
+    } else if (textExts.includes(ext)) {
+      routePath = "text";
+      wHeight = 600;
+    } else if (docExts.includes(ext)) {
+      routePath = "doc";
+      wHeight = 800;
+    } else {
+      showAlert(t("Unsupported File"), t("This file format cannot be previewed natively."));
+      return;
+    }
+
     const streamUrl = encodeURIComponent(`http://127.0.0.1:8888/stream/${node.id}`);
     const title = encodeURIComponent(node.name);
-    const isAudio = ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'].includes(node.name.split('.').pop()?.toLowerCase() || '');
+    const isAudio = routePath === "player" && wHeight === 800;
 
-    // Note the /#/ syntax here! This tells HashRouter to load the MediaPlayer.
-    const routeUrl = `index.html#/player?url=${streamUrl}&title=${title}&isAudio=${isAudio}`;
+    // Direct the new window to the correct HashRoute
+    const routeUrl = `index.html#/${routePath}?url=${streamUrl}&title=${title}&isAudio=${isAudio}`;
 
-    const playerWindow = new WebviewWindow(`player-${node.id}`, {
+    const viewerWindow = new WebviewWindow(`viewer-${node.id}`, {
       url: routeUrl,
-      title: `Playing: ${node.name}`,
+      title: `Viewing: ${node.name}`,
       width: 854,
-      height: isAudio ? 200 : 480,
+      height: wHeight,
       center: true,
       resizable: true,
     });
 
-    playerWindow.once('tauri://error', function (e) {
+    viewerWindow.once('tauri://error', function () {
       console.warn("Window might already exist. Focusing instead.");
     });
   };

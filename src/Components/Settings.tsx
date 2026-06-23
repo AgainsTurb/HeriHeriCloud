@@ -3,11 +3,30 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 
+interface SettingsState {
+  concurrentUploads: number;
+  concurrentDownloads: number;
+  downloadPath: string;
+  useDefaultDownloadPath: boolean;
+  uploadSpeedLimit: number;
+  downloadSpeedLimit: number;
+  unlimitedUpload: boolean;
+  unlimitedDownload: boolean;
+  notifyUpload: boolean;
+  notifyDownload: boolean;
+  notifySound: boolean;
+  enableWebDAV: boolean;
+  webdavPort: number;
+  webdavUser: string;
+  webdavPass: string;
+}
+
 export default function Settings() {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<"General" | "Transfer" | "Notification">("General");
+  const [alertData, setAlertData] = useState<{ title: string, msg: string } | null>(null);
 
-  const [settings, setSettings] = useState(() => {
+  const [settings, setSettings] = useState<SettingsState>(() => {
     const saved = localStorage.getItem("heriheri_config");
     return saved ? JSON.parse(saved) : {
       concurrentUploads: 2,
@@ -21,8 +40,10 @@ export default function Settings() {
       notifyUpload: true,
       notifyDownload: true,
       notifySound: false,
-      enableWebDAV: false,
-      webdavPort: 8765,
+      enableWebDAV: true,
+      webdavPort: 8888,
+      webdavUser: "admin",
+      webdavPass: "admin",
     };
   });
 
@@ -33,7 +54,17 @@ export default function Settings() {
     const downLimit = settings.unlimitedDownload ? 0 : settings.downloadSpeedLimit;
     await invoke("vfs_update_speed_limits", { uploadLimit: upLimit, downloadLimit: downLimit }).catch(console.error);
 
-    alert(t("Configuration Saved!"));
+    // Push WebDAV settings to Rust
+    await invoke("set_webdav_config", { 
+      port: Number(settings.webdavPort), 
+      username: settings.webdavUser, 
+      password: settings.webdavPass 
+    }).catch(console.error);
+
+    setAlertData({
+      title: t("Configuration Saved!"),
+      msg: t("Your changes have been saved. Please restart the app if you updated the WebDAV Port to apply network socket modifications.")
+    });
   };
 
   return (
@@ -76,6 +107,41 @@ export default function Settings() {
                   <option value="en">English</option>
                   <option value="zh">中文 (简体)</option>
                 </select>
+              </div>
+
+              <hr style={styles.divider} />
+
+              <h3 style={styles.sectionTitle}>{t("WebDAV Local Mount")}</h3>
+              <div style={styles.grid2Col}>
+                <div style={styles.inputGroup}>
+                  <label style={styles.inputLabel}>{t("Mount Port")}</label>
+                  <input 
+                    style={styles.input} 
+                    type="number" 
+                    value={settings.webdavPort} 
+                    onChange={(e) => setSettings({...settings, webdavPort: parseInt(e.target.value) || 8888})} 
+                  />
+                </div>
+              </div>
+              <div style={styles.grid2Col}>
+                <div style={styles.inputGroup}>
+                  <label style={styles.inputLabel}>{t("Username")}</label>
+                  <input 
+                    style={styles.input} 
+                    type="text" 
+                    value={settings.webdavUser} 
+                    onChange={(e) => setSettings({...settings, webdavUser: e.target.value})} 
+                  />
+                </div>
+                <div style={styles.inputGroup}>
+                  <label style={styles.inputLabel}>{t("Password")}</label>
+                  <input 
+                    style={styles.input} 
+                    type="text" 
+                    value={settings.webdavPass} 
+                    onChange={(e) => setSettings({...settings, webdavPass: e.target.value})} 
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -227,6 +293,18 @@ export default function Settings() {
               </div>
             </div>
           )}
+
+          {alertData && (
+            <div style={styles.modalOverlay} onClick={() => setAlertData(null)}>
+              <div style={styles.modalBox} onClick={(e) => e.stopPropagation()}>
+                <h3 style={styles.modalTitle}>{alertData.title}</h3>
+                <p style={styles.modalText}>{alertData.msg}</p>
+                <div style={styles.modalActions}>
+                  <button style={styles.primaryButton} onClick={() => setAlertData(null)}>{t("OK")}</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Fixed Footer for Save Action */}
@@ -263,4 +341,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   footer: { backgroundColor: "#f9fafb", padding: "16px 32px", borderTop: "1px solid #111827", display: "flex", justifyContent: "flex-end" },
   primaryButton: { display: "flex", alignItems: "center", backgroundColor: "#111827", color: "#ffffff", padding: "10px 24px", borderRadius: "0", border: "1px solid #111827", fontSize: "12px", fontWeight: "700", cursor: "pointer", textTransform: "uppercase", letterSpacing: "1px", transition: "background 0.2s" },
   secondaryButton: { backgroundColor: "#ffffff", color: "#111827", padding: "10px 16px", borderRadius: "0", border: "1px solid #111827", fontSize: "12px", fontWeight: "700", cursor: "pointer", textTransform: "uppercase", letterSpacing: "1px", transition: "background 0.2s" },
+  modalOverlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(255, 255, 255, 0.9)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 999 },
+  modalBox: { backgroundColor: "#ffffff", padding: "32px", borderRadius: "0", border: "2px solid #111827", width: "360px", boxShadow: "8px 8px 0px 0px rgba(17, 24, 39, 1)", display: "flex", flexDirection: "column", gap: "24px" },
+  modalTitle: { margin: 0, fontSize: "16px", fontWeight: "800", color: "#111827", textTransform: "uppercase", letterSpacing: "1px" },
+  modalText: { margin: 0, fontSize: "13px", color: "#4b5563", lineHeight: "1.5" },
+  modalActions: { display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "8px" },
 };
