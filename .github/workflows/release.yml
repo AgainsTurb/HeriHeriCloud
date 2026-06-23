@@ -70,5 +70,4 @@ jobs:
           releaseBody: "Automated production release for HeriHeri. See the attached assets for your operating system."
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true
           args: ${{ matrix.args }}

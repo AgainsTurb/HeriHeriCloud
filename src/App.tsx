@@ -1,6 +1,6 @@
 import { getVersion } from "@tauri-apps/api/app";
-import { check, Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { type } from "@tauri-apps/plugin-os";
+import { open as openBrowser } from "@tauri-apps/plugin-shell";
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
@@ -30,9 +30,8 @@ export default function App() {
   const [countdown, setCountdown] = useState(0);
 
   const [appVersion, setAppVersion] = useState("");
-  const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState<{ version: string, body: string, url: string } | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
-  const [isUpdating, setIsUpdating] = useState(false);
 
   const isUploadingBatch = useRef(false);
   const isSyncing = useRef(false);
@@ -91,9 +90,38 @@ export default function App() {
       try {
         const ver = await getVersion();
         setAppVersion(ver);
-        const update = await check();
-        if (update && update.available) {
-          setUpdateAvailable(update);
+        
+        const res = await fetch("https://api.github.com/repos/AgainsTurb/HeriHeriCloud/releases/latest");
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        // Strip the 'v' from the GitHub tag (e.g., 'v1.0.0' -> '1.0.0')
+        const latestVer = data.tag_name.replace(/^v/, '');
+        
+        if (latestVer !== ver) {
+          const osType = await type(); // Returns 'windows', 'macos', 'linux', etc.
+          let targetUrl = data.html_url; // Fallback to the general release page
+          
+          // Hunt for the exact OS artifact
+          const asset = data.assets.find((a: any) => {
+            const name = a.name.toLowerCase();
+            if (osType === 'windows' && (name.endsWith('.exe') || name.endsWith('.msi'))) return true;
+            if (osType === 'macos' && (name.endsWith('.dmg') || name.endsWith('.app.tar.gz'))) return true;
+            if (osType === 'linux' && (name.endsWith('.appimage') || name.endsWith('.deb') || name.endsWith('.rpm'))) return true;
+            if (osType === 'android' && name.endsWith('.apk')) return true;
+            return false;
+          });
+
+          // Prepend the proxy for mainland China acceleration
+          if (asset) {
+            targetUrl = `https://gh-proxy.org/${asset.browser_download_url}`;
+          }
+
+          setUpdateAvailable({
+            version: data.tag_name,
+            body: data.body,
+            url: targetUrl
+          });
         }
       } catch (err) {
         console.error("Version check failed:", err);
@@ -581,13 +609,13 @@ export default function App() {
       )}
 
       {showUpdateModal && updateAvailable && (
-        <div style={styles.modalOverlay} onClick={() => !isUpdating && setShowUpdateModal(false)}>
+        <div style={styles.modalOverlay} onClick={() => setShowUpdateModal(false)}>
           <div style={{...styles.modalBox, width: "480px"}} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>{t("Update Available")}</h3>
             
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <div style={styles.inputLabel}>{t("Current Version")}: V{appVersion}</div>
-              <div style={styles.inputLabel}>{t("Latest Version")}: V{updateAvailable.version}</div>
+              <div style={styles.inputLabel}>{t("Latest Version")}: {updateAvailable.version}</div>
             </div>
 
             <div style={styles.inputGroup}>
@@ -603,25 +631,17 @@ export default function App() {
               <button 
                 style={styles.secondaryButton} 
                 onClick={() => setShowUpdateModal(false)}
-                disabled={isUpdating}
               >
                 {t("Cancel")}
               </button>
               <button 
-                style={{...styles.primaryButton, backgroundColor: isUpdating ? "#4b5563" : "#111827", borderColor: isUpdating ? "#4b5563" : "#111827"}} 
+                style={styles.primaryButton} 
                 onClick={async () => {
-                  setIsUpdating(true);
-                  try {
-                    await updateAvailable.downloadAndInstall();
-                    await relaunch();
-                  } catch (err) {
-                    alert(t("Update failed: ") + String(err));
-                    setIsUpdating(false);
-                  }
+                  await openBrowser(updateAvailable.url);
+                  setShowUpdateModal(false);
                 }}
-                disabled={isUpdating}
               >
-                {isUpdating ? t("Downloading & Installing...") : t("Update Now")}
+                {t("Download Update")}
               </button>
             </div>
           </div>
