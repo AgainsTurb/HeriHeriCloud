@@ -1,3 +1,6 @@
+import { getVersion } from "@tauri-apps/api/app";
+import { check, Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
@@ -25,6 +28,11 @@ export default function App() {
 
   const [regForm, setRegForm] = useState({ phone: "", code: "", password: "", confirm: "" });
   const [countdown, setCountdown] = useState(0);
+
+  const [appVersion, setAppVersion] = useState("");
+  const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   const isUploadingBatch = useRef(false);
   const isSyncing = useRef(false);
@@ -76,6 +84,22 @@ export default function App() {
     if (savedYlogin && savedPhpdisk && savedPhone) {
       restoreSession(savedYlogin, savedPhpdisk, savedPhone);
     }
+  }, []);
+
+  useEffect(() => {
+    async function initVersion() {
+      try {
+        const ver = await getVersion();
+        setAppVersion(ver);
+        const update = await check();
+        if (update && update.available) {
+          setUpdateAvailable(update);
+        }
+      } catch (err) {
+        console.error("Version check failed:", err);
+      }
+    }
+    initVersion();
   }, []);
 
   async function triggerSystemNotification(title: string, body: string, playSound: boolean) {
@@ -409,7 +433,14 @@ export default function App() {
       <aside style={styles.sidebar}>
         <div style={styles.logoContainer}>
           <h1 style={styles.logoText}>HERIHERI</h1>
-          <span style={styles.badge}>V2.0</span>
+          <div 
+            style={{ ...styles.badge, position: "relative", cursor: "pointer" }} 
+            onClick={() => updateAvailable ? setShowUpdateModal(true) : alert(t("You are on the latest version!"))}
+            title={updateAvailable ? t("New update available!") : t("Current Version")}
+          >
+            V{appVersion || "..."}
+            {updateAvailable && <div style={styles.redDot} />}
+          </div>
         </div>
 
         <nav style={styles.navMenu}>
@@ -548,6 +579,54 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {showUpdateModal && updateAvailable && (
+        <div style={styles.modalOverlay} onClick={() => !isUpdating && setShowUpdateModal(false)}>
+          <div style={{...styles.modalBox, width: "480px"}} onClick={(e) => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>{t("Update Available")}</h3>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div style={styles.inputLabel}>{t("Current Version")}: V{appVersion}</div>
+              <div style={styles.inputLabel}>{t("Latest Version")}: V{updateAvailable.version}</div>
+            </div>
+
+            <div style={styles.inputGroup}>
+              <label style={styles.inputLabel}>{t("Release Notes")}</label>
+              <textarea 
+                style={{...styles.input, flex: 1, minHeight: "140px", fontSize: "12px", resize: "none", backgroundColor: "#f9fafb", lineHeight: "1.5"}} 
+                readOnly 
+                value={updateAvailable.body || t("No changelog provided.")} 
+              />
+            </div>
+
+            <div style={styles.modalActions}>
+              <button 
+                style={styles.secondaryButton} 
+                onClick={() => setShowUpdateModal(false)}
+                disabled={isUpdating}
+              >
+                {t("Cancel")}
+              </button>
+              <button 
+                style={{...styles.primaryButton, backgroundColor: isUpdating ? "#4b5563" : "#111827", borderColor: isUpdating ? "#4b5563" : "#111827"}} 
+                onClick={async () => {
+                  setIsUpdating(true);
+                  try {
+                    await updateAvailable.downloadAndInstall();
+                    await relaunch();
+                  } catch (err) {
+                    alert(t("Update failed: ") + String(err));
+                    setIsUpdating(false);
+                  }
+                }}
+                disabled={isUpdating}
+              >
+                {isUpdating ? t("Downloading & Installing...") : t("Update Now")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -579,4 +658,5 @@ const styles: { [key: string]: React.CSSProperties } = {
   inputGroup: { display: "flex", flexDirection: "column", gap: "8px" },
   inputLabel: { fontSize: "10px", fontWeight: "700", color: "#111827", textTransform: "uppercase", letterSpacing: "1px" },
   input: { padding: "10px 12px", backgroundColor: "#ffffff", color: "#111827", border: "1px solid #111827", borderRadius: "0", fontSize: "13px", outline: "none" },
+  redDot: { position: "absolute", top: "-4px", right: "-4px", width: "8px", height: "8px", backgroundColor: "#ef4444", borderRadius: "50%", border: "2px solid #ffffff" },
 };

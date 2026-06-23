@@ -16,6 +16,7 @@ out/
 .env.test.local
 .env.production.local
 .cargo/config.toml
+.tauri/
 
 # -----------------------------
 # Rust / Tauri Backend

@@ -1,6 +1,12 @@
 use crate::heriheri::{get_safe_lanzou_ext, NodeType, VfsNode, VfsTree};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use chacha20poly1305::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    ChaCha20Poly1305, Key, Nonce,
+};
 use regex::Regex;
 use reqwest::{header, multipart, Client};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
@@ -13,12 +19,6 @@ use tauri::{AppHandle, Manager, State};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
-use serde::{Deserialize, Serialize};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chacha20poly1305::{
-    aead::{Aead, AeadCore, KeyInit, OsRng},
-    ChaCha20Poly1305, Key, Nonce,
-};
 
 const BASE_URL: &str = "https://up.woozooo.com";
 
@@ -74,7 +74,7 @@ fn solve_ali_waf(arg1: &str) -> String {
 // Helper function to get the cipher
 fn get_cipher() -> ChaCha20Poly1305 {
     let secret = env!("HERIHERI_SECRET_KEY");
-    
+
     // Ensure the key is exactly 32 bytes
     let mut key_bytes = [0u8; 32];
     let bytes = secret.as_bytes();
@@ -87,26 +87,30 @@ fn get_cipher() -> ChaCha20Poly1305 {
 
 fn encrypt_payload(json_str: &str) -> String {
     let cipher = get_cipher();
-    
+
     // For share links, we can generate a random 12-byte nonce
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng); 
-    
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+
     // Encrypt the payload
-    let ciphertext = cipher.encrypt(&nonce, json_str.as_bytes()).expect("Encryption failure!");
-    
+    let ciphertext = cipher
+        .encrypt(&nonce, json_str.as_bytes())
+        .expect("Encryption failure!");
+
     // Prepend the nonce to the ciphertext so we can decrypt it later
     let mut payload = nonce.to_vec();
     payload.extend_from_slice(&ciphertext);
-    
+
     // Base64 encode the final binary blob
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     URL_SAFE_NO_PAD.encode(payload)
 }
 
 pub fn decrypt_payload(encoded: &str) -> Result<String, String> {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    
-    let decoded = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| "Invalid Base64")?;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| "Invalid Base64")?;
     if decoded.len() < 12 {
         return Err("Payload too short".into());
     }
@@ -114,12 +118,14 @@ pub fn decrypt_payload(encoded: &str) -> Result<String, String> {
     // Split the nonce from the actual ciphertext
     let (nonce_bytes, ciphertext) = decoded.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
-    
+
     let cipher = get_cipher();
-    
+
     // This will FAIL if the string was tampered with (Auth Tag verification)
-    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| "Decryption or Authentication failed!")?;
-    
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| "Decryption or Authentication failed!")?;
+
     String::from_utf8(plaintext).map_err(|_| "Invalid UTF-8".into())
 }
 
@@ -977,7 +983,9 @@ pub struct AppState {
     pub downloader: Arc<tokio::sync::Mutex<crate::lanzou_down::LanzouDownloader>>,
     pub vfs: Arc<tokio::sync::Mutex<Option<VfsTree>>>,
     pub pid_stack: Arc<tokio::sync::Mutex<Vec<u64>>>,
-    pub task_ctrl: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU8>>>>,
+    pub task_ctrl: Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU8>>>,
+    >,
     pub sync_lock: Arc<tokio::sync::Mutex<()>>,
     pub upload_limit: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub download_limit: std::sync::Arc<std::sync::atomic::AtomicU32>,
@@ -1089,17 +1097,25 @@ fn rebuild_folder_recursive<'a>(
         } else {
             if node.lanzou_id.starts_with("alien://") {
             } else if node.chunks != "1" && !node.chunks.is_empty() {
-                let res = lanzou.create_folder_in_target(node.md5.clone(), "".to_string(), new_parent_lanzou_id.clone()).await?;
+                let res = lanzou
+                    .create_folder_in_target(
+                        node.md5.clone(),
+                        "".to_string(),
+                        new_parent_lanzou_id.clone(),
+                    )
+                    .await?;
 
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                 let new_chunk_folder_id = res["text"].as_str().unwrap_or("").to_string();
-                
+
                 if !new_chunk_folder_id.is_empty() {
                     if let Ok(parts) = lanzou.list_files_by_id(&node.lanzou_id).await {
                         for part in parts {
                             if let Some(fid) = part["id"].as_str() {
-                                let _ = lanzou.move_item(fid.to_string(), new_chunk_folder_id.clone()).await;
+                                let _ = lanzou
+                                    .move_item(fid.to_string(), new_chunk_folder_id.clone())
+                                    .await;
 
                                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             }
@@ -1185,7 +1201,11 @@ pub async fn set_lanzou_cookies(
 }
 
 #[tauri::command]
-pub async fn init_vfs_root(phone: String, app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn init_vfs_root(
+    phone: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     {
         let mut current_phone = state.current_phone.lock().await;
         *current_phone = phone.clone();
@@ -1194,10 +1214,10 @@ pub async fn init_vfs_root(phone: String, app: AppHandle, state: State<'_, AppSt
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
 
-    let file_name = if phone.is_empty() { 
-        "heriheri_tree.txt".to_string() 
-    } else { 
-        format!("heriheri_tree_{}.txt", phone) 
+    let file_name = if phone.is_empty() {
+        "heriheri_tree.txt".to_string()
+    } else {
+        format!("heriheri_tree_{}.txt", phone)
     };
     let tree_path = app_data_dir.join(file_name);
 
@@ -1357,7 +1377,11 @@ pub async fn vfs_upload_file(
         let vfs_guard = state.vfs.lock().await;
         if let Some(tree) = &*vfs_guard {
             if let Some(existing_node) = tree.nodes.values().find(|n| {
-                n.md5 == md5_str && n.node_type == NodeType::File && !n.is_deleted && !n.is_trashed && !n.lanzou_id.starts_with("alien://")
+                n.md5 == md5_str
+                    && n.node_type == NodeType::File
+                    && !n.is_deleted
+                    && !n.is_trashed
+                    && !n.lanzou_id.starts_with("alien://")
             }) {
                 instant_copy = Some((
                     existing_node.lanzou_id.clone(),
@@ -1371,8 +1395,12 @@ pub async fn vfs_upload_file(
         let mut vfs_guard = state.vfs.lock().await;
         if let Some(tree) = vfs_guard.as_mut() {
             let chunks_u32 = existing_chunks.parse::<u32>().unwrap_or(1);
-            let alien_nodes_to_remove: Vec<u64> = tree.nodes.values()
-                .filter(|n| n.pid == target_pid && n.md5 == md5_str && n.lanzou_id.starts_with("alien://"))
+            let alien_nodes_to_remove: Vec<u64> = tree
+                .nodes
+                .values()
+                .filter(|n| {
+                    n.pid == target_pid && n.md5 == md5_str && n.lanzou_id.starts_with("alien://")
+                })
                 .map(|n| n.id)
                 .collect();
             for id in alien_nodes_to_remove {
@@ -1418,7 +1446,7 @@ pub async fn vfs_upload_file(
                 0,
                 total_size,
                 task_flag.clone(),
-                state.upload_limit.clone()
+                state.upload_limit.clone(),
             )
             .await;
 
@@ -1465,7 +1493,7 @@ pub async fn vfs_upload_file(
                     current_loaded,
                     total_size,
                     task_flag.clone(),
-                    state.upload_limit.clone()
+                    state.upload_limit.clone(),
                 )
                 .await;
 
@@ -1487,8 +1515,12 @@ pub async fn vfs_upload_file(
 
     let mut vfs_guard = state.vfs.lock().await;
     if let Some(tree) = vfs_guard.as_mut() {
-        let alien_nodes_to_remove: Vec<u64> = tree.nodes.values()
-            .filter(|n| n.pid == target_pid && n.md5 == md5_str && n.lanzou_id.starts_with("alien://"))
+        let alien_nodes_to_remove: Vec<u64> = tree
+            .nodes
+            .values()
+            .filter(|n| {
+                n.pid == target_pid && n.md5 == md5_str && n.lanzou_id.starts_with("alien://")
+            })
             .map(|n| n.id)
             .collect();
         for id in alien_nodes_to_remove {
@@ -1703,7 +1735,7 @@ pub async fn vfs_expand_drop(
                                     Ok(id) => id,
                                     Err(_) => pid,
                                 };
-                            
+
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             dirs_to_process.push((p, child_pid));
                         }
@@ -1826,18 +1858,26 @@ pub async fn vfs_move_items(
             } else if let Some(node) = tree.nodes.get(&id).cloned() {
                 if node.lanzou_id.starts_with("alien://") {
                 } else if node.chunks != "1" && !node.chunks.is_empty() {
-                    let res = lanzou.create_folder_in_target(node.md5.clone(), "".to_string(), target_lanzou_id.clone()).await?;
+                    let res = lanzou
+                        .create_folder_in_target(
+                            node.md5.clone(),
+                            "".to_string(),
+                            target_lanzou_id.clone(),
+                        )
+                        .await?;
 
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                     let new_chunk_folder_id = res["text"].as_str().unwrap_or("").to_string();
-                    
+
                     if !new_chunk_folder_id.is_empty() {
                         // Move the internal .iso parts
                         if let Ok(parts) = lanzou.list_files_by_id(&node.lanzou_id).await {
                             for part in parts {
                                 if let Some(fid) = part["id"].as_str() {
-                                    let _ = lanzou.move_item(fid.to_string(), new_chunk_folder_id.clone()).await;
+                                    let _ = lanzou
+                                        .move_item(fid.to_string(), new_chunk_folder_id.clone())
+                                        .await;
                                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                                 }
                             }
@@ -1846,7 +1886,7 @@ pub async fn vfs_move_items(
                         let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
 
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        
+
                         if let Some(mut_node) = tree.nodes.get_mut(&id) {
                             mut_node.lanzou_id = new_chunk_folder_id;
                         }
@@ -2089,10 +2129,16 @@ pub async fn vfs_download_file(
     let (chunks_str, share_url, file_pwd) = {
         if let Some(code) = share_code.filter(|c| !c.is_empty()) {
             let encoded = code.replace("heri://", "");
-            let json_str = decrypt_payload(&encoded).map_err(|_| "Failed to decrypt share code".to_string())?;
-            let payload = serde_json::from_str::<SharePayload>(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
-            
-            (payload.c.to_string(), payload.l, Some(payload.p).filter(|p| !p.is_empty()))
+            let json_str = decrypt_payload(&encoded)
+                .map_err(|_| "Failed to decrypt share code".to_string())?;
+            let payload = serde_json::from_str::<SharePayload>(&json_str)
+                .map_err(|_| "Failed to parse JSON".to_string())?;
+
+            (
+                payload.c.to_string(),
+                payload.l,
+                Some(payload.p).filter(|p| !p.is_empty()),
+            )
         } else {
             let vfs_guard = state.vfs.lock().await;
             let tree = vfs_guard.as_ref().ok_or("VFS Offline")?;
@@ -2100,24 +2146,39 @@ pub async fn vfs_download_file(
 
             if node.lanzou_id.starts_with("alien://") {
                 let encoded = node.lanzou_id.replace("alien://", "");
-                let json_str = decrypt_payload(&encoded).map_err(|_| "Failed to decrypt Alien payload".to_string())?;
-                let payload = serde_json::from_str::<SharePayload>(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
-                
-                (node.chunks, payload.l, Some(payload.p).filter(|p| !p.is_empty()))
+                let json_str = decrypt_payload(&encoded)
+                    .map_err(|_| "Failed to decrypt Alien payload".to_string())?;
+                let payload = serde_json::from_str::<SharePayload>(&json_str)
+                    .map_err(|_| "Failed to parse JSON".to_string())?;
+
+                (
+                    node.chunks,
+                    payload.l,
+                    Some(payload.p).filter(|p| !p.is_empty()),
+                )
             } else {
                 let is_folder = node.node_type == crate::heriheri::NodeType::Directory
                     || (node.chunks != "1" && !node.chunks.is_empty());
 
                 let lanzou = state.lanzou.lock().await;
-                let share_info = lanzou.get_share_info(node.lanzou_id.clone(), is_folder).await?;
+                let share_info = lanzou
+                    .get_share_info(node.lanzou_id.clone(), is_folder)
+                    .await?;
 
                 let url = if let Some(u) = share_info["new_url"].as_str() {
                     u.to_string()
                 } else {
-                    format!("{}/{}", share_info["is_newd"].as_str().unwrap_or(""), share_info["f_id"].as_str().unwrap_or(""))
+                    format!(
+                        "{}/{}",
+                        share_info["is_newd"].as_str().unwrap_or(""),
+                        share_info["f_id"].as_str().unwrap_or("")
+                    )
                 };
 
-                let pwd = share_info["pwd"].as_str().filter(|p| !p.is_empty()).map(|s| s.to_string());
+                let pwd = share_info["pwd"]
+                    .as_str()
+                    .filter(|p| !p.is_empty())
+                    .map(|s| s.to_string());
 
                 if url.is_empty() || url == "/" {
                     return Err("Could not get share URL".to_string());
@@ -2184,7 +2245,9 @@ pub async fn vfs_download_file(
 
             let limit_kb = state.download_limit.load(Ordering::Relaxed);
             if limit_kb > 0 {
-                let expected_time = std::time::Duration::from_secs_f64(chunk.len() as f64 / (limit_kb * 1024) as f64);
+                let expected_time = std::time::Duration::from_secs_f64(
+                    chunk.len() as f64 / (limit_kb * 1024) as f64,
+                );
                 let elapsed = start_time.elapsed();
                 if elapsed < expected_time {
                     tokio::time::sleep(expected_time - elapsed).await;
@@ -2289,7 +2352,9 @@ pub async fn vfs_download_file(
 
                 let limit_kb = state.download_limit.load(Ordering::Relaxed);
                 if limit_kb > 0 {
-                    let expected_time = std::time::Duration::from_secs_f64(chunk.len() as f64 / (limit_kb * 1024) as f64);
+                    let expected_time = std::time::Duration::from_secs_f64(
+                        chunk.len() as f64 / (limit_kb * 1024) as f64,
+                    );
                     let elapsed = start_time.elapsed();
                     if elapsed < expected_time {
                         tokio::time::sleep(expected_time - elapsed).await;
@@ -2468,7 +2533,11 @@ pub async fn vfs_sync_push(
     let tsv_bytes = tsv_content.into_bytes();
     let total_size = tsv_bytes.len();
     let phone = state.current_phone.lock().await.clone();
-    let file_prefix = if phone.is_empty() { "heriheri_tree_".to_string() } else { format!("heriheri_tree_{}_", phone) };
+    let file_prefix = if phone.is_empty() {
+        "heriheri_tree_".to_string()
+    } else {
+        format!("heriheri_tree_{}_", phone)
+    };
     let file_name = format!("{}{}.txt", file_prefix, new_timestamp);
 
     println!("[SYNC] Pushing new state to cloud: {}", file_name);
@@ -2484,7 +2553,7 @@ pub async fn vfs_sync_push(
             0,
             total_size,
             dummy_flag,
-            std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0))
+            std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         )
         .await;
 
@@ -2510,9 +2579,17 @@ pub async fn vfs_sync_push(
 }
 
 #[tauri::command]
-pub async fn vfs_update_speed_limits(upload_limit: u32, download_limit: u32, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.upload_limit.store(upload_limit, std::sync::atomic::Ordering::SeqCst);
-    state.download_limit.store(download_limit, std::sync::atomic::Ordering::SeqCst);
+pub async fn vfs_update_speed_limits(
+    upload_limit: u32,
+    download_limit: u32,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .upload_limit
+        .store(upload_limit, std::sync::atomic::Ordering::SeqCst);
+    state
+        .download_limit
+        .store(download_limit, std::sync::atomic::Ordering::SeqCst);
     Ok(())
 }
 
@@ -2541,15 +2618,23 @@ pub async fn vfs_generate_share_code(
 
     // --- Generate from native files ---
     let is_chunked = node.chunks != "1" && !node.chunks.is_empty();
-    let share_info = lanzou.get_share_info(node.lanzou_id.clone(), is_chunked).await?;
-    
+    let share_info = lanzou
+        .get_share_info(node.lanzou_id.clone(), is_chunked)
+        .await?;
+
     let url = if let Some(u) = share_info["new_url"].as_str() {
         u.to_string()
     } else {
-        format!("{}/{}", share_info["is_newd"].as_str().unwrap_or(""), share_info["f_id"].as_str().unwrap_or(""))
+        format!(
+            "{}/{}",
+            share_info["is_newd"].as_str().unwrap_or(""),
+            share_info["f_id"].as_str().unwrap_or("")
+        )
     };
 
-    if url.is_empty() || url == "/" { return Err("Could not generate Lanzou link".into()); }
+    if url.is_empty() || url == "/" {
+        return Err("Could not generate Lanzou link".into());
+    }
 
     let pwd = share_info["pwd"].as_str().unwrap_or("").to_string();
     let chunks_u32 = node.chunks.parse::<u32>().unwrap_or(1);
@@ -2570,11 +2655,14 @@ pub async fn vfs_generate_share_code(
 
 #[tauri::command]
 pub fn vfs_resolve_share_code(code: String) -> Result<ResolveResult, String> {
-    if !code.starts_with("heri://") { return Err("Invalid share code format.".into()); }
-    
+    if !code.starts_with("heri://") {
+        return Err("Invalid share code format.".into());
+    }
+
     let encoded = code.replace("heri://", "");
     let json_str = decrypt_payload(&encoded)?;
-    let payload: SharePayload = serde_json::from_str(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
+    let payload: SharePayload =
+        serde_json::from_str(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
 
     Ok(ResolveResult {
         name: payload.n,
@@ -2591,33 +2679,56 @@ pub async fn vfs_rent_item(
     target_pid: u64,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    if !code.starts_with("heri://") { return Err("Invalid share code format.".into()); }
+    if !code.starts_with("heri://") {
+        return Err("Invalid share code format.".into());
+    }
     let encoded = code.replace("heri://", "");
     let json_str = decrypt_payload(&encoded)?;
-    let payload: SharePayload = serde_json::from_str(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
+    let payload: SharePayload =
+        serde_json::from_str(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
 
     let mut vfs_guard = state.vfs.lock().await;
     let tree = vfs_guard.as_mut().ok_or("VFS Offline")?;
 
     // --- RULE 1: Prevent Duplicates in the same folder ---
-    if tree.nodes.values().any(|n| n.pid == target_pid && n.md5 == payload.m && !n.is_deleted && !n.is_trashed) {
+    if tree
+        .nodes
+        .values()
+        .any(|n| n.pid == target_pid && n.md5 == payload.m && !n.is_deleted && !n.is_trashed)
+    {
         return Ok(()); // Silently succeed without adding a second file
     }
 
     // --- RULE 2: Instant Copy from Physical (Ignore Alien links) ---
-    let physical_copy = tree.nodes.values().find(|n| {
-        n.md5 == payload.m && n.node_type == crate::heriheri::NodeType::File && !n.is_deleted && !n.is_trashed && !n.lanzou_id.starts_with("alien://")
-    }).map(|n| (n.lanzou_id.clone(), n.chunks.clone()));
+    let physical_copy = tree
+        .nodes
+        .values()
+        .find(|n| {
+            n.md5 == payload.m
+                && n.node_type == crate::heriheri::NodeType::File
+                && !n.is_deleted
+                && !n.is_trashed
+                && !n.lanzou_id.starts_with("alien://")
+        })
+        .map(|n| (n.lanzou_id.clone(), n.chunks.clone()));
 
-    let ext = std::path::Path::new(&payload.n).extension().unwrap_or_default().to_string_lossy().to_string();
+    let ext = std::path::Path::new(&payload.n)
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
     if let Some((phys_id, phys_chunks)) = physical_copy {
         let chunks = phys_chunks.parse::<u32>().unwrap_or(1);
-        tree.add_file(target_pid, &payload.n, &phys_id, &payload.s, &payload.m, &ext, chunks);
+        tree.add_file(
+            target_pid, &payload.n, &phys_id, &payload.s, &payload.m, &ext, chunks,
+        );
     } else {
         // Only generate an Alien Symlink if we absolutely have to
         let alien_id = format!("alien://{}", encoded);
-        tree.add_file(target_pid, &payload.n, &alien_id, &payload.s, &payload.m, &ext, payload.c);
+        tree.add_file(
+            target_pid, &payload.n, &alien_id, &payload.s, &payload.m, &ext, payload.c,
+        );
     }
 
     tree.save_local()?;

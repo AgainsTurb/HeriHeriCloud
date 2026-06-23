@@ -63,10 +63,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "HeriHeri v__VERSION__" # "__VERSION__" is automatically replaced by your package.json version
           releaseBody: "Automated production release for HeriHeri. See the attached assets for your operating system."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
+          includeUpdaterJson: true
           args: ${{ matrix.args }}

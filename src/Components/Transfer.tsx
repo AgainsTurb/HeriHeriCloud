@@ -8,6 +8,21 @@ import { useFileSelection } from "../Hooks/useFileSelection";
 import { useRectangleSelect } from "../Hooks/useRectangleSelect";
 import { useContextMenu } from "../Hooks/useContextMenu";
 
+function formatBytes(sizeStr: string) {
+  if (!sizeStr || sizeStr === "-") return "-";
+  if (/[a-zA-Z]/.test(sizeStr)) return sizeStr;
+
+  const bytes = parseInt(sizeStr, 10);
+  if (isNaN(bytes)) return sizeStr;
+  if (bytes === 0) return "0 B";
+
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+}
+
 function TransferRowNode({ node, index, isSelected, handleRowClick, handleContextMenu, setSelectedNodes }: any) {
   return (
     <div 
@@ -22,7 +37,7 @@ function TransferRowNode({ node, index, isSelected, handleRowClick, handleContex
         <img src={getFileIcon(node.name, false)} alt="icon" style={styles.icon} />
         <span style={{...styles.itemName, color: "#111827"}}>{node.name}</span>
       </div>
-      <div style={styles.cellDefault}>{node.size}</div>
+      <div style={styles.cellDefault}>{formatBytes(node.size)}</div>
       <div style={styles.cellDefault}>{node.chunks}</div>
       <div style={{...styles.cellDefault, fontSize: "11px", fontFamily: "monospace"}}>{node.md5.substring(0, 16)}...</div>
     </div>
