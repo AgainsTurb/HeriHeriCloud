@@ -2734,3 +2734,33 @@ pub async fn vfs_rent_item(
     tree.save_local()?;
     Ok(())
 }
+
+#[tauri::command]
+pub async fn vfs_search(query: String, state: tauri::State<'_, crate::lanzou::AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let vfs_guard = state.vfs.lock().await;
+    let tree = vfs_guard.as_ref().ok_or("VFS Offline")?;
+    let q = query.to_lowercase();
+    let mut results = Vec::new();
+
+    for node in tree.nodes.values() {
+        if !node.is_deleted && !node.is_trashed && node.name.to_lowercase().contains(&q) {
+            // Build the string path recursively upwards
+            let mut path_parts = Vec::new();
+            let mut current_pid = node.pid;
+            
+            while let Some(parent) = tree.nodes.get(&current_pid) {
+                path_parts.push(parent.name.clone());
+                current_pid = parent.pid;
+            }
+            path_parts.push("All Files".to_string());
+            path_parts.reverse();
+            
+            // Merge the path_str into the standard node JSON response
+            let mut json_node = serde_json::to_value(node).map_err(|e| e.to_string())?;
+            json_node["path_str"] = serde_json::Value::String(path_parts.join(" > "));
+            results.push(json_node);
+        }
+    }
+    
+    Ok(results)
+}

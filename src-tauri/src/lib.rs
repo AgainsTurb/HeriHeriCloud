@@ -9,13 +9,13 @@ use lanzou::{
     vfs_get_current_pid, vfs_get_folder_tree, vfs_get_share_info, vfs_go_back,
     vfs_hard_delete_items, vfs_list_bin, vfs_list_dir, vfs_move_items, vfs_rename_item,
     vfs_rent_item, vfs_resolve_share_code, vfs_restore_items, vfs_sync_pull, vfs_sync_push,
-    vfs_update_speed_limits, vfs_upload_file, AppState, LanzouCloud,
+    vfs_update_speed_limits, vfs_upload_file, vfs_search, AppState, LanzouCloud
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
-use webdav::{boot_webdav_server, get_webdav_config, set_webdav_config};
+use webdav::{boot_webdav_server, get_webdav_config, set_webdav_config, get_local_ip};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -69,9 +69,11 @@ pub fn run() {
             vfs_generate_share_code,
             vfs_resolve_share_code,
             vfs_rent_item,
+            vfs_search,
             get_webdav_config,
             set_webdav_config,
-            boot_webdav_server
+            boot_webdav_server,
+            get_local_ip
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

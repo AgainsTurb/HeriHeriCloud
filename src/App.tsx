@@ -8,12 +8,9 @@ import { isPermissionGranted, requestPermission, sendNotification } from '@tauri
 import "./App.css";
 
 import Home from "./Components/Home";
-import Bin from "./Components/Bin";
-import Uploading from "./Components/Uploading";
-import Downloading from "./Components/Downloading";
-import Finished from "./Components/Finished";
-import Settings from "./Components/Settings";
 import Transfer from "./Components/Transfer";
+import Settings from "./Components/Settings";
+import Rent from "./Components/Rent";
 
 export default function App() {
   const { t } = useTranslation();
@@ -447,12 +444,9 @@ export default function App() {
 
   const renderContent = () => {
     if (activeTab === "home") return <Home status={status} />;
-    if (activeTab === "bin") return <Bin />;
-    if (activeTab === "uploading") return <Uploading />;
-    if (activeTab === "downloading") return <Downloading />;
-    if (activeTab === "finished") return <Finished />;
-    if (activeTab === "settings") return <Settings />;
     if (activeTab === "transfer") return <Transfer />;
+    if (activeTab === "settings") return <Settings />;
+    if (activeTab === "rent") return <Rent />;
     return <Home status={status} />;
   };
 
@@ -476,32 +470,23 @@ export default function App() {
             <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M2 3h6l2 3h12v15H2z"/></svg>
             {t("All Files")}
           </div>
-          <div style={activeTab === "bin" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("bin")}>
-            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M3 6h18M19 6v14H5V6m3 0V4h8v2"/></svg>
-            {t("Recycle Bin")}
-          </div>
           
           <hr style={styles.divider} />
           
-          <div style={activeTab === "uploading" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("uploading")}>
-            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M21 15v4H3v-4M17 8l-5-5-5 5M12 3v12"/></svg>
-            {t("Uploading")}
-          </div>
-          <div style={activeTab === "downloading" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("downloading")}>
-            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M21 15v4H3v-4M7 10l5 5 5-5M12 15V3"/></svg>
-            {t("Downloading")}
-          </div>
           <div style={activeTab === "transfer" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("transfer")}>
-            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><polyline points="16 3 21 8 16 13"/>
+            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter">
+              <path d="M21 15v4H3v-4M7 10l5 5 5-5M12 15V3"/>
+            </svg>
+            {t("Transfer")}
+          </div>
+          <div style={activeTab === "rent" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("rent")}>
+            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter">
+              <polyline points="16 3 21 8 16 13"/>
               <line x1="21" y1="8" x2="9" y2="8"/>
               <polyline points="8 21 3 16 8 11"/>
               <line x1="3" y1="16" x2="15" y2="16"/>
             </svg>
-            {t("Transfer")}
-          </div>
-          <div style={activeTab === "finished" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("finished")}>
-            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><polyline points="20 6 9 17 4 12"/></svg>
-            {t("Finished")}
+            {t("Rent")}
           </div>
 
           <hr style={styles.divider} />

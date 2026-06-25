@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { QRCodeCanvas } from "qrcode.react";
 import { useTranslation } from "react-i18next";
 import { getFileIcon } from "../Utils/fileIcons";
 
@@ -11,6 +12,7 @@ import { DndContext, useDraggable, useDroppable, PointerSensor, useSensor, useSe
 import { useFileSelection } from "../Hooks/useFileSelection";
 import { useRectangleSelect } from "../Hooks/useRectangleSelect";
 import { useContextMenu } from "../Hooks/useContextMenu";
+import Bin from "./Bin";
 
 function FileRowNode({ node, index, isSelected, isCut, formatTime, formatBytes, handleRowClick, navigateToFolder, triggerShare, setShowBatchDelete, setSelectedNodes, handleContextMenu, openMediaWindow }: any) {
   const isDir = node.node_type === "Directory";
@@ -62,7 +64,10 @@ function FileRowNode({ node, index, isSelected, isCut, formatTime, formatBytes, 
     >
       <div style={styles.cellName}>
         <img src={getFileIcon(node.name, isDir)} alt="icon" style={styles.icon} />
-        <span style={{...styles.itemName, color: "#111827"}}>{node.name}</span>
+        <div style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <span style={{...styles.itemName, color: "#111827"}}>{node.name}</span>
+          {node.path_str && <span style={{ fontSize: "10px", color: "#6b7280", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: "2px" }}>{node.path_str}</span>}
+        </div>
       </div>
       <div style={styles.cellDefault}>{isDir ? "-" : formatBytes(node.size)}</div>
       <div style={styles.cellDefault}>{formatTime(node.time)}</div>
@@ -121,7 +126,7 @@ export default function Home({ status }: { status: string }) {
   const [alertData, setAlertData] = useState<{ title: string, msg: string } | null>(null);
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [folderForm, setFolderForm] = useState({ name: "", desc: "" });
-  const [shareData, setShareData] = useState<{ url: string, pwd: string } | null>(null);
+  const [shareData, setShareData] = useState<{ url: string, pwd: string, items?: {code: string, name: string}[] } | null>(null);
   const [showBatchDelete, setShowBatchDelete] = useState(false);
   const [clipboard, setClipboard] = useState<{ type: "cut", ids: number[] } | null>(null);
 
@@ -136,13 +141,52 @@ export default function Home({ status }: { status: string }) {
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameTargetId, setRenameTargetId] = useState<number | null>(null);
   const [renameName, setRenameName] = useState("");
+  const [showBin, setShowBin] = useState(false);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const isSearchingRef = useRef(false);
+
+  async function handleSearch(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      if (!searchQuery.trim()) {
+        isSearchingRef.current = false;
+        fetchDirectory();
+        return;
+      }
+      setIsLoading(true);
+      isSearchingRef.current = true;
+      clearSelection();
+      try {
+        const results = await invoke<any[]>("vfs_search", { query: searchQuery.trim() });
+        setNodes(results);
+        setBreadcrumbs([{ id: -1, name: `Search Results for "${searchQuery}"` }]);
+      } catch (error) {
+        showAlert(t("Search Error"), String(error));
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  }
+
+  function clearSearch() {
+    setSearchQuery("");
+    if (isSearchingRef.current) {
+      isSearchingRef.current = false;
+      fetchDirectory();
+    }
+  }
 
   useEffect(() => {
     if (status === "Connected") initializeDrive();
   }, [status]);
 
   useEffect(() => {
-    const handleTaskEnd = () => fetchDirectory();
+    const handleTaskEnd = () => {
+      // Only refresh the directory if we are NOT currently looking at search results
+      if (!isSearchingRef.current) {
+        fetchDirectory();
+      }
+    };
     window.addEventListener("TASK_END", handleTaskEnd);
     return () => window.removeEventListener("TASK_END", handleTaskEnd);
   }, []);
@@ -364,6 +408,9 @@ export default function Home({ status }: { status: string }) {
   }
 
   async function navigateToFolder(id: number) {
+    if (id === -1) return;
+    isSearchingRef.current = false;
+    setSearchQuery("");
     await invoke("vfs_enter_folder", { id });
     fetchDirectory();
   }
@@ -414,12 +461,14 @@ export default function Home({ status }: { status: string }) {
     try {
       const targetIds = selectedNodes.has(vfsId) && selectedNodes.size > 1 ? Array.from(selectedNodes) : [vfsId];
       let codes = [];
+      let items = [];
       
       for (const id of targetIds) {
         const node = nodes.find(n => n.id === id);
         if (node && node.node_type !== "Directory") {
            const code = await invoke<string>("vfs_generate_share_code", { vfsId: id });
            codes.push(code);
+           items.push({ code, name: node.name });
         }
       }
       
@@ -428,7 +477,7 @@ export default function Home({ status }: { status: string }) {
          return;
       }
       
-      setShareData({ url: codes.join("\n"), pwd: "" }); 
+      setShareData({ url: codes.join("\n"), pwd: "", items }); 
     } catch (error) {
       showAlert(t("Share Error"), String(error));
     }
@@ -458,6 +507,24 @@ export default function Home({ status }: { status: string }) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   }
 
+  const copyQrToClipboard = (id: string) => {
+    const canvas = document.getElementById(id) as HTMLCanvasElement;
+    if (!canvas) return;
+    canvas.toBlob(async (blob) => {
+      if (blob) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        } catch (err) {
+          showAlert(t("Copy Error"), t("Failed to copy image to clipboard."));
+        }
+      }
+    });
+  };
+
+  if (showBin) {
+    return <Bin onBack={() => setShowBin(false)} />;
+  }
+
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <div 
@@ -466,8 +533,37 @@ export default function Home({ status }: { status: string }) {
         onContextMenu={(e) => handleContextMenu(e, null)}
       >
         <header style={styles.header}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px" }}>{t("All Files")}</h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                <button style={{...styles.secondaryButton, padding: "6px 12px", display: "flex", alignItems: "center", gap: "6px"}} onClick={() => setShowBin(true)}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M3 6h18M19 6v14H5V6m3 0V4h8v2"/></svg>
+                  {t("Bin")}
+                </button>
+              </div>
+              <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                <input 
+                  type="text" 
+                  placeholder={t("Search files & folders...")} 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={handleSearch}
+                  style={{...styles.input, width: "300px", padding: "8px 32px 8px 12px"}}
+                />
+                {searchQuery && (
+                  <svg 
+                    onClick={clearSearch} 
+                    style={{ position: "absolute", right: "10px", width: "16px", height: "16px", cursor: "pointer", color: "#4b5563", transition: "color 0.2s" }} 
+                    onMouseOver={(e) => e.currentTarget.style.color = "#111827"}
+                    onMouseOut={(e) => e.currentTarget.style.color = "#4b5563"}
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"
+                  >
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                )}
+              </div>
+            </div>
             <div style={styles.breadcrumbBar}>
               {breadcrumbs.map((crumb, idx) => (
                 <BreadcrumbNode 
@@ -492,7 +588,11 @@ export default function Home({ status }: { status: string }) {
 
           {isLoading && <div style={styles.statusState}>{t("SYNCING & LOADING...")}</div>}
           {!isLoading && nodes.length === 0 && status === "Connected" && (
-            <div style={styles.statusState}>{t("This folder is empty. Right-click to begin.")}</div>
+            <div style={styles.statusState}>
+              {isSearchingRef.current 
+                ? `${t("No results found for")} "${searchQuery}"`
+                : t("This folder is empty. Right-click to begin.")}
+            </div>
           )}
           {!isLoading && status !== "Connected" && (
             <div style={styles.statusState}>{t("Please connect to the cloud via the sidebar.")}</div>
@@ -575,8 +675,10 @@ export default function Home({ status }: { status: string }) {
 
         {shareData && (
           <div style={styles.modalOverlay} onClick={() => setShareData(null)}>
-            <div style={styles.modalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={{...styles.modalBox, width: "520px"}} onClick={(e) => e.stopPropagation()}>
               <h3 style={styles.modalTitle}>{t("Share Item")}</h3>
+              
+              {/* Top: Raw Codes */}
               <div style={styles.inputGroup}>
                 <label style={styles.inputLabel}>{t("HeriHeri Share Code")}</label>
                 <textarea 
@@ -586,13 +688,46 @@ export default function Home({ status }: { status: string }) {
                   onClick={e => e.currentTarget.select()} 
                 />
               </div>
+
+              {/* Bottom: Horizontal QR Scroll */}
+              {shareData.items && shareData.items.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
+                  <label style={styles.inputLabel}>{t("QR Codes (Click to Copy Image)")}</label>
+                  <div style={{ display: "flex", overflowX: "auto", gap: "16px", paddingBottom: "8px" }}>
+                    {shareData.items.map((item, idx) => (
+                      <div key={idx} style={{ minWidth: "140px", maxWidth: "140px", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", border: "2px solid #111827", padding: "12px", backgroundColor: "#f9fafb" }}>
+                        <div 
+                          style={{ cursor: "pointer", border: "2px solid #111827", backgroundColor: "#ffffff", padding: "8px", transition: "transform 0.1s" }}
+                          onClick={() => copyQrToClipboard(`qr-${idx}`)}
+                          onMouseDown={e => e.currentTarget.style.transform = "scale(0.95)"}
+                          onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
+                          onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+                          title={t("Click to copy image")}
+                        >
+                          <QRCodeCanvas 
+                            id={`qr-${idx}`}
+                            value={item.code} 
+                            size={100}
+                            level="M" 
+                            includeMargin={false}
+                          />
+                        </div>
+                        <span style={{ fontSize: "11px", fontWeight: "700", color: "#111827", textAlign: "center", width: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={item.name}>
+                          {item.name}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div style={styles.modalActions}>
                 <button style={styles.secondaryButton} onClick={() => setShareData(null)}>{t("Close")}</button>
                 <button style={styles.primaryButton} onClick={() => {
                   navigator.clipboard.writeText(shareData.url);
                   setShareData(null);
-                  showAlert("Copied", "Code copied to clipboard");
-                }}>{t("Copy")}</button>
+                  showAlert(t("Copied"), t("Code copied to clipboard"));
+                }}>{t("Copy Text")}</button>
               </div>
             </div>
           </div>
@@ -746,7 +881,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   headerActions: { display: "flex", gap: "12px", alignItems: "center" },
   breadcrumbBar: { display: "flex", alignItems: "center", fontSize: "12px", color: "#111827", backgroundColor: "#f3f4f6", padding: "8px 12px", borderRadius: "0", border: "1px solid #111827", fontWeight: "600" },
   breadcrumbLink: { cursor: "pointer", color: "#111827", textDecoration: "underline" },
-  listContainer: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", position: "relative", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)" },
+  listContainer: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", position: "relative", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)", userSelect: "none" },
   listHeaderRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 140px 140px 100px", padding: "12px 20px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", alignItems: "center", textTransform: "uppercase", letterSpacing: "1px" },
   listBody: { overflowY: "auto", flex: 1 },
   listRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 140px 140px 100px", padding: "10px 20px", borderBottom: "1px solid #e5e7eb", alignItems: "center", cursor: "pointer", transition: "background-color 0.1s, opacity 0.2s", userSelect: "none" },

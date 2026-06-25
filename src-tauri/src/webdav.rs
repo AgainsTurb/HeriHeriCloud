@@ -543,7 +543,7 @@ async fn handle_stream(
                 chunks_str,
                 total_size,
                 urls,
-                expires_at: Instant::now() + Duration::from_secs(1800),
+                expires_at: Instant::now() + Duration::from_secs(300),
             };
 
             cache.lock().await.insert(vfs_id, new_entry.clone());
@@ -640,7 +640,7 @@ async fn handle_stream(
                                 chunks_str: chunks_str_clone.clone(),
                                 total_size,
                                 urls: vec![active_url.clone()],
-                                expires_at: Instant::now() + Duration::from_secs(1800),
+                                expires_at: Instant::now() + Duration::from_secs(300),
                             };
                             get_cache().lock().await.insert(vfs_id, new_entry);
                             println!("[PROXY] Cache Refreshed. Resuming stream.");
@@ -713,7 +713,7 @@ async fn handle_stream(
                                 chunks_str: chunks_str_clone.clone(),
                                 total_size,
                                 urls: new_urls,
-                                expires_at: Instant::now() + Duration::from_secs(1800),
+                                expires_at: Instant::now() + Duration::from_secs(300),
                             };
                             get_cache().lock().await.insert(vfs_id, new_entry);
                             println!("[PROXY] Cache Refreshed. Resuming stream.");
@@ -835,4 +835,17 @@ pub async fn boot_webdav_server(
     });
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_local_ip() -> String {
+    // Zero-dependency trick to find the active local network IP
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = socket.local_addr() {
+                return addr.ip().to_string();
+            }
+        }
+    }
+    "192.168.x.x".to_string() // Safe fallback
 }

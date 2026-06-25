@@ -99,10 +99,6 @@ export default function Downloading() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <header style={styles.header}>
-        <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px", color: "#111827" }}>{t("Downloading")}</h2>
-      </header>
-
       <div style={styles.listContainer}>
         <div style={styles.listHeaderRow}>
           <div>{t("File Name")}</div>
@@ -218,7 +214,6 @@ export default function Downloading() {
 // Styling (Matches Neo-Brutalist exactly)
 // --------------------------------------------------------
 const styles: { [key: string]: React.CSSProperties } = {
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" },
   listContainer: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", position: "relative", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)" },
   listHeaderRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 80px 60px 100px", padding: "12px 20px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", alignItems: "center", textTransform: "uppercase", letterSpacing: "1px" },
   statusState: { textAlign: "center", padding: "48px", color: "#111827", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" },

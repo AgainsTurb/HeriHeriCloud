@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
@@ -25,6 +25,14 @@ export default function Settings() {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<"General" | "Transfer" | "Notification">("General");
   const [alertData, setAlertData] = useState<{ title: string, msg: string } | null>(null);
+
+  const [localIp, setLocalIp] = useState("192.168.x.x");
+
+  useEffect(() => {
+    invoke<string>("get_local_ip")
+      .then(ip => setLocalIp(ip))
+      .catch(console.error);
+  }, []);
 
   const [settings, setSettings] = useState<SettingsState>(() => {
     const saved = localStorage.getItem("heriheri_config");
@@ -112,6 +120,17 @@ export default function Settings() {
               <hr style={styles.divider} />
 
               <h3 style={styles.sectionTitle}>{t("WebDAV Local Mount")}</h3>
+              
+              {/* --- MINIMUM FIX: WebDAV URL Display --- */}
+              <div style={{ marginBottom: "16px", padding: "12px", backgroundColor: "#f9fafb", border: "1px dashed #d1d5db", fontSize: "12px", color: "#4b5563", lineHeight: "1.6" }}>
+                <div style={{ marginBottom: "4px" }}>
+                  <strong>{t("Local Access:")}</strong> <span style={{ fontFamily: "monospace", color: "#111827", userSelect: "all" }}>http://127.0.0.1:{settings.webdavPort}/dav</span>
+                </div>
+                <div>
+                  <strong>{t("Network Access:")}</strong> <span style={{ fontFamily: "monospace", color: "#111827", userSelect: "all" }}>http://{localIp}:{settings.webdavPort}/dav</span>
+                </div>
+              </div>
+
               <div style={styles.grid2Col}>
                 <div style={styles.inputGroup}>
                   <label style={styles.inputLabel}>{t("Mount Port")}</label>

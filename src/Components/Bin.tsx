@@ -7,7 +7,7 @@ import { useRectangleSelect } from "../Hooks/useRectangleSelect";
 import { useContextMenu } from "../Hooks/useContextMenu";
 import { useTranslation } from "react-i18next";
 
-export default function Bin() {
+export default function Bin({ onBack }: { onBack: () => void }) {
   const { t } = useTranslation();
   const [nodes, setNodes] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -121,7 +121,12 @@ export default function Bin() {
     >
       <header style={styles.header}>
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-          <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px" }}>{t("Recycle Bin")}</h2>
+          <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+            <button style={{...styles.secondaryButton, padding: "6px 10px", display: "flex", alignItems: "center"}} onClick={onBack}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            </button>
+            <h2 style={{ margin: 0, textTransform: "uppercase", letterSpacing: "1px", fontSize: "20px" }}>{t("Recycle Bin")}</h2>
+          </div>
         </div>
         <div style={styles.headerActions}></div>
       </header>

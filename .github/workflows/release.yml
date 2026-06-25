@@ -3,7 +3,7 @@ name: "Publish Release"
 on:
   push:
     tags:
-      - 'v*' # Triggers the workflow when you push a version tag like v1.0.0
+      - 'v*'
 
 jobs:
   publish-tauri:
@@ -13,11 +13,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-latest" # Builds for macOS (Apple Silicon natively, setup for Universal)
+          - platform: "macos-latest"
             args: "--target universal-apple-darwin"
-          - platform: "ubuntu-22.04" # Builds for Linux amd64
+          - platform: "ubuntu-22.04"
             args: ""
-          - platform: "windows-latest" # Builds for Windows amd64
+          - platform: "windows-latest"
             args: ""
 
     runs-on: ${{ matrix.platform }}
@@ -29,12 +29,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm' # Change to 'yarn' or 'pnpm' if you use them
+          cache: 'npm'
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          # Add targets required for cross-compiling (like macOS universal)
           targets: ${{ matrix.platform == 'macos-latest' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
 
       - name: Cache Rust dependencies
@@ -56,7 +55,30 @@ jobs:
             libsoup-3.0-dev
 
       - name: Install frontend dependencies
-        run: npm install # Change to yarn install or pnpm install if applicable
+        run: npm install
+
+      - name: Extract changelog for current version
+        id: changelog
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ENGLISH=$(sed -n '/<summary><strong>🇬🇧 English Version/,/<\/details>/p' CHANGELOG.md)
+
+          BODY=$(echo "$ENGLISH" | awk -v ver="$VERSION" '
+            BEGIN { found=0 }
+            /^## \[/ {
+              if (index($0, ver)) { found=1; print; next }
+              else if (found) exit
+            }
+            found { print }
+          ')
+
+          if [ -z "$BODY" ]; then
+            BODY="No changelog found for version $VERSION."
+          fi
+
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Build Tauri Application & Create Release
         uses: tauri-apps/tauri-action@v0
@@ -66,8 +88,8 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "HeriHeri v__VERSION__" # "__VERSION__" is automatically replaced by your package.json version
-          releaseBody: "Automated production release for HeriHeri. See the attached assets for your operating system."
+          releaseName: "HeriHeri v__VERSION__"
+          releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
