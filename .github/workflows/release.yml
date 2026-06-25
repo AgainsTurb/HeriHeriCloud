@@ -59,6 +59,7 @@ jobs:
 
       - name: Extract changelog for current version
         id: changelog
+        shell: bash
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           ENGLISH=$(sed -n '/<summary><strong>🇬🇧 English Version/,/<\/details>/p' CHANGELOG.md)
