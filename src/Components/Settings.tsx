@@ -21,7 +21,7 @@ interface SettingsState {
   webdavPass: string;
 }
 
-export default function Settings() {
+export default function Settings({ isMobile, AppLogo, AppAuth }: any) {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<"General" | "Transfer" | "Notification">("General");
   const [alertData, setAlertData] = useState<{ title: string, msg: string } | null>(null);
@@ -35,8 +35,7 @@ export default function Settings() {
   }, []);
 
   const [settings, setSettings] = useState<SettingsState>(() => {
-    const saved = localStorage.getItem("heriheri_config");
-    return saved ? JSON.parse(saved) : {
+    const defaultSettings: SettingsState = {
       concurrentUploads: 2,
       concurrentDownloads: 2,
       downloadPath: "",
@@ -53,6 +52,9 @@ export default function Settings() {
       webdavUser: "admin",
       webdavPass: "admin",
     };
+
+    const saved = localStorage.getItem("heriheri_config");
+    return saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
   });
 
   const handleSave = async () => {
@@ -76,23 +78,23 @@ export default function Settings() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <header style={styles.header}>
-        <div style={{ display: "flex", gap: "24px", alignItems: "center" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", paddingTop: "calc(env(safe-area-inset-top, 0px) + 0px)" }}>
+      <header style={{ ...styles.header, marginBottom: isMobile ? "12px" : "20px" }}>
+        <div style={{ display: "flex", gap: isMobile ? "12px" : "24px", alignItems: "center" }}>
           <h2 
-            style={{...styles.tabTitle, color: activeTab === "General" ? "#111827" : "#9ca3af", borderBottom: activeTab === "General" ? "2px solid #111827" : "2px solid transparent"}} 
+            style={{...styles.tabTitle, fontSize: isMobile ? "18px" : "18px", color: activeTab === "General" ? "#111827" : "#9ca3af", borderBottom: activeTab === "General" ? "2px solid #111827" : "2px solid transparent"}} 
             onClick={() => setActiveTab("General")}
           >
             {t("General")}
           </h2>
           <h2 
-            style={{...styles.tabTitle, color: activeTab === "Transfer" ? "#111827" : "#9ca3af", borderBottom: activeTab === "Transfer" ? "2px solid #111827" : "2px solid transparent"}} 
+            style={{...styles.tabTitle, fontSize: isMobile ? "18px" : "18px", color: activeTab === "Transfer" ? "#111827" : "#9ca3af", borderBottom: activeTab === "Transfer" ? "2px solid #111827" : "2px solid transparent"}} 
             onClick={() => setActiveTab("Transfer")}
           >
             {t("Transfer")}
           </h2>
           <h2 
-            style={{...styles.tabTitle, color: activeTab === "Notification" ? "#111827" : "#9ca3af", borderBottom: activeTab === "Notification" ? "2px solid #111827" : "2px solid transparent"}} 
+            style={{...styles.tabTitle, fontSize: isMobile ? "18px" : "18px", color: activeTab === "Notification" ? "#111827" : "#9ca3af", borderBottom: activeTab === "Notification" ? "2px solid #111827" : "2px solid transparent"}} 
             onClick={() => setActiveTab("Notification")}
           >
             {t("Notification")}
@@ -101,9 +103,20 @@ export default function Settings() {
       </header>
 
       <div style={styles.container}>
-        <div style={styles.scrollArea}>
+        <div style={{ ...styles.scrollArea, padding: isMobile ? "16px" : "32px", marginBottom: isMobile ? "60px" : "0px" }}>
           {activeTab === "General" && (
-            <div style={styles.section}>
+            <div style={{ ...styles.section, gap: isMobile ? "14px" : "24px" }}>
+
+              {isMobile && (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    {AppLogo}
+                    {AppAuth}
+                  </div>
+                  <hr style={styles.divider} />
+                </>
+              )}
+
               <h3 style={styles.sectionTitle}>{t("Language")}</h3>
               <div style={styles.inputGroup}>
                 <label style={styles.inputLabel}>{t("Display Language")}</label>
@@ -131,7 +144,7 @@ export default function Settings() {
                 </div>
               </div>
 
-              <div style={styles.grid2Col}>
+              <div style={{ ...styles.grid2Col, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: isMobile ? "12px" : "24px" }}>
                 <div style={styles.inputGroup}>
                   <label style={styles.inputLabel}>{t("Mount Port")}</label>
                   <input 
@@ -142,7 +155,7 @@ export default function Settings() {
                   />
                 </div>
               </div>
-              <div style={styles.grid2Col}>
+              <div style={{ ...styles.grid2Col, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: isMobile ? "12px" : "24px" }}>
                 <div style={styles.inputGroup}>
                   <label style={styles.inputLabel}>{t("Username")}</label>
                   <input 
@@ -166,9 +179,9 @@ export default function Settings() {
           )}
 
           {activeTab === "Transfer" && (
-            <div style={styles.section}>
+            <div style={{ ...styles.section, gap: isMobile ? "14px" : "24px" }}>
               <h3 style={styles.sectionTitle}>{t("Concurrent Tasks")}</h3>
-              <div style={styles.grid2Col}>
+              <div style={{ ...styles.grid2Col, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: isMobile ? "12px" : "24px" }}>
                 <div style={styles.inputGroup}>
                   <label style={styles.inputLabel}>{t("Max Concurrent Uploads")}</label>
                   <input 
@@ -196,33 +209,41 @@ export default function Settings() {
               <h3 style={styles.sectionTitle}>{t("Download Location")}</h3>
               <div style={styles.inputGroup}>
                 <label style={styles.inputLabel}>{t("Target Download Path")}</label>
-                <div style={{ display: "flex", gap: "8px" }}>
-                  <input style={{...styles.readOnlyInput, flex: 1}} value={settings.downloadPath} readOnly />
-                  <button 
-                    style={styles.secondaryButton} 
-                    onClick={async () => {
-                      const selected = await open({ directory: true });
-                      if (selected && !Array.isArray(selected)) setSettings({...settings, downloadPath: selected});
-                    }}
-                  >
-                    {t("Browse")}
-                  </button>
+                
+                <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? "12px" : "8px", alignItems: isMobile ? "flex-start" : "center" }}>
+                  
+                  {/* Keep Input and Browse button together on the same line */}
+                  <div style={{ display: "flex", gap: "8px", width: isMobile ? "100%" : "auto", flex: 1 }}>
+                    <input style={{...styles.readOnlyInput, flex: 1, minWidth: 0}} value={settings.downloadPath} readOnly />
+                    <button 
+                      style={styles.secondaryButton} 
+                      onClick={async () => {
+                        const selected = await open({ directory: true });
+                        if (selected && !Array.isArray(selected)) setSettings({...settings, downloadPath: selected});
+                      }}
+                    >
+                      {t("Browse")}
+                    </button>
+                  </div>
+
+                  {/* Drop to next line and scale down on Mobile */}
                   <div 
-                    style={{...styles.checkboxWrapper, marginLeft: "8px"}} 
+                    style={{...styles.checkboxWrapper, marginLeft: isMobile ? "0px" : "8px"}} 
                     onClick={() => setSettings({...settings, useDefaultDownloadPath: !settings.useDefaultDownloadPath})}
                   >
-                    <div style={{...styles.checkbox, backgroundColor: settings.useDefaultDownloadPath ? "#111827" : "#ffffff"}}>
-                      {settings.useDefaultDownloadPath && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="3" strokeLinecap="square" strokeLinejoin="miter"><polyline points="20 6 9 17 4 12"/></svg>}
+                    <div style={{...styles.checkbox, width: isMobile ? "14px" : "18px", height: isMobile ? "14px" : "18px", backgroundColor: settings.useDefaultDownloadPath ? "#111827" : "#ffffff"}}>
+                      {settings.useDefaultDownloadPath && <svg width={isMobile ? "8" : "10"} height={isMobile ? "8" : "10"} viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="3" strokeLinecap="square" strokeLinejoin="miter"><polyline points="20 6 9 17 4 12"/></svg>}
                     </div>
-                    <span style={styles.checkboxLabel}>{t("Default")}</span>
+                    <span style={{...styles.checkboxLabel, fontSize: isMobile ? "11px" : "13px"}}>{t("Default")}</span>
                   </div>
+
                 </div>
               </div>
 
               <hr style={styles.divider} />
 
               <h3 style={styles.sectionTitle}>{t("Speed Limits")}</h3>
-              <div style={styles.grid2Col}>
+              <div style={{ ...styles.grid2Col, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: isMobile ? "12px" : "24px" }}>
                 <div style={styles.inputGroup}>
                   <label style={styles.inputLabel}>{t("Upload Speed Limit (KB/s)")}</label>
                   <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "4px" }}>
@@ -273,7 +294,7 @@ export default function Settings() {
           )}
 
           {activeTab === "Notification" && (
-            <div style={styles.section}>
+            <div style={{ ...styles.section, gap: isMobile ? "14px" : "24px" }}>
               <h3 style={styles.sectionTitle}>{t("System Notifications")}</h3>
               
               <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -327,8 +348,8 @@ export default function Settings() {
         </div>
 
         {/* Fixed Footer for Save Action */}
-        <div style={styles.footer}>
-          <button style={styles.primaryButton} onClick={handleSave}>
+        <div style={{ ...styles.footer, padding: isMobile ? "12px 16px 45px 16px" : "16px 32px" }}>
+          <button style={{ ...styles.primaryButton, width: isMobile ? "100%" : "auto", justifyContent: "center" }} onClick={handleSave}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" style={{ marginRight: "8px" }}><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
             {t("Save Configuration")}
           </button>
@@ -346,10 +367,10 @@ const styles: { [key: string]: React.CSSProperties } = {
   tabTitle: { margin: 0, paddingBottom: "12px", cursor: "pointer", fontSize: "18px", fontWeight: "800", transition: "color 0.2s", textTransform: "uppercase", letterSpacing: "1px" },
   container: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)" },
   scrollArea: { padding: "32px", overflowY: "auto", flex: 1 },
-  section: { display: "flex", flexDirection: "column", gap: "24px" },
+  section: { display: "flex", flexDirection: "column", gap: "16px" },
   sectionTitle: { margin: "0 0 8px 0", fontSize: "14px", fontWeight: "800", color: "#111827", textTransform: "uppercase", letterSpacing: "1px" },
   grid2Col: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" },
-  inputGroup: { display: "flex", flexDirection: "column", gap: "8px" },
+  inputGroup: { display: "flex", flexDirection: "column", gap: "4px" },
   inputLabel: { fontSize: "11px", fontWeight: "700", color: "#4b5563", textTransform: "uppercase", letterSpacing: "1px" },
   input: { padding: "10px 12px", backgroundColor: "#ffffff", color: "#111827", border: "1px solid #111827", borderRadius: "0", fontSize: "13px", outline: "none", fontWeight: "600", width: "100%", boxSizing: "border-box" },
   readOnlyInput: { padding: "10px 12px", backgroundColor: "#f3f4f6", border: "1px solid #111827", borderRadius: "0", fontSize: "13px", color: "#4b5563", outline: "none", fontWeight: "600", cursor: "default" },

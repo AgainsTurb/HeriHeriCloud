@@ -34,6 +34,14 @@ export default function Finished() {
 
   const displayedTasks = finishedTasks.filter(t => t.type === subTab);
 
+  const isMobileView = window.innerWidth < 768;
+  const dynamicGridStyle = {
+    display: "grid",
+    // 3 Columns: Name, Status, Time (Operation column is removed)
+    gridTemplateColumns: isMobileView ? "minmax(120px, 1fr) 80px 80px" : "minmax(200px, 3fr) 100px 100px",
+    alignItems: "center"
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <header style={styles.header}>
@@ -41,13 +49,12 @@ export default function Finished() {
           <h2 style={{...styles.tabTitle, color: subTab === "Upload" ? "#111827" : "#9ca3af", borderBottom: subTab === "Upload" ? "2px solid #111827" : "2px solid transparent"}} onClick={() => setSubTab("Upload")}>{t("Uploaded")}</h2>
           <h2 style={{...styles.tabTitle, color: subTab === "Download" ? "#111827" : "#9ca3af", borderBottom: subTab === "Download" ? "2px solid #111827" : "2px solid transparent"}} onClick={() => setSubTab("Download")}>{t("Downloaded")}</h2>
         </div>
-        <button style={styles.secondaryButton} onClick={clearHistory}>{t("Clear History")}</button>
+        <button style={styles.secondaryButton} onClick={clearHistory}>{t("Clear")}</button>
       </header>
 
       <div style={styles.listContainer}>
-        <div style={styles.listHeaderRow}>
+        <div style={{ ...styles.listHeaderRow, ...dynamicGridStyle }}>
           <div style={styles.cellName}>{t("File Name")}</div>
-          <div style={styles.cellDefault}>{t("Operation")}</div>
           <div style={styles.cellDefault}>{t("Status")}</div>
           <div style={styles.cellDefault}>{t("Time")}</div>
         </div>
@@ -57,7 +64,7 @@ export default function Finished() {
         ) : (
           <div style={styles.listBody}>
             {displayedTasks.map((task) => (
-              <div key={task.id} style={styles.listRow}>
+              <div key={task.id} style={{ ...styles.listRow, ...dynamicGridStyle }}>
                 <div style={styles.cellName}>
                   <span style={styles.icon}>
                     {task.type === "Upload" ? (
@@ -68,7 +75,7 @@ export default function Finished() {
                   </span>
                   <span style={styles.itemName} title={task.error}>{task.name}</span>
                 </div>
-                <div style={styles.cellDefault}>{task.type}</div>
+                {/* Operation Column removed */}
                 <div style={{
                   ...styles.cellDefault, 
                   color: task.status === "Success" ? "#10b981" : task.status === "Skipped" ? "#f59e0b" : "#ef4444", 
@@ -93,9 +100,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "20px", borderBottom: "2px solid #111827" },
   tabTitle: { margin: 0, paddingBottom: "12px", cursor: "pointer", fontSize: "18px", fontWeight: "800", transition: "color 0.2s", textTransform: "uppercase", letterSpacing: "1px" },
   listContainer: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)" },
-  listHeaderRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 100px 100px", padding: "12px 20px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", alignItems: "center", textTransform: "uppercase", letterSpacing: "1px" },
+  listHeaderRow: { padding: "12px 20px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" },
   listBody: { overflowY: "auto", flex: 1 },
-  listRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 100px 100px", padding: "10px 20px", borderBottom: "1px solid #e5e7eb", alignItems: "center" },
+  listRow: { padding: "10px 20px", borderBottom: "1px solid #e5e7eb", cursor: "default", transition: "background-color 0.1s" },
   cellName: { display: "flex", alignItems: "center", gap: "12px", overflow: "hidden" },
   cellDefault: { fontSize: "13px", color: "#4b5563", whiteSpace: "nowrap" },
   icon: { display: "flex", alignItems: "center", color: "#111827" },

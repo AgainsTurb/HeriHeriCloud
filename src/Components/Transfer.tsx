@@ -11,7 +11,7 @@ export default function Transfer() {
   const [activeTab, setActiveTab] = useState<"Uploading" | "Downloading" | "Finished">("Downloading");
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative", paddingTop: "calc(env(safe-area-inset-top, 0px) + 0px)" }}>
       {/* Neo-Brutalist Tab Header Switcher */}
       <header style={styles.header}>
         <div style={{ display: "flex", gap: "24px", alignItems: "center" }}>

@@ -8,14 +8,14 @@ use lanzou::{
     vfs_enter_folder, vfs_expand_drop, vfs_generate_share_code, vfs_get_breadcrumbs,
     vfs_get_current_pid, vfs_get_folder_tree, vfs_get_share_info, vfs_go_back,
     vfs_hard_delete_items, vfs_list_bin, vfs_list_dir, vfs_move_items, vfs_rename_item,
-    vfs_rent_item, vfs_resolve_share_code, vfs_restore_items, vfs_sync_pull, vfs_sync_push,
-    vfs_update_speed_limits, vfs_upload_file, vfs_search, AppState, LanzouCloud
+    vfs_rent_item, vfs_resolve_share_code, vfs_restore_items, vfs_search, vfs_sync_pull,
+    vfs_sync_push, vfs_update_speed_limits, vfs_upload_file, AppState, LanzouCloud,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
-use webdav::{boot_webdav_server, get_webdav_config, set_webdav_config, get_local_ip};
+use webdav::{boot_webdav_server, get_local_ip, get_webdav_config, set_webdav_config};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,7 +31,14 @@ pub fn run() {
         current_phone: Arc::new(tokio::sync::Mutex::new(String::new())),
     };
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_fs::init());
+
+    #[cfg(mobile)]
+    {
+        builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    }
+
+    builder
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())

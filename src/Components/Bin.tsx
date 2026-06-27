@@ -105,17 +105,46 @@ export default function Bin({ onBack }: { onBack: () => void }) {
     }
   }
 
-  function formatTime(unixSeconds: number) {
-    if (!unixSeconds || unixSeconds === 0) return "-";
-    const d = new Date(unixSeconds * 1000);
+  function formatTime(timestampMs: number) {
+    if (!timestampMs || timestampMs === 0) return "-";
+    const d = new Date(timestampMs);
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  }
+
+  function formatBytes(sizeStr: string) {
+    if (!sizeStr || sizeStr === "-") return "-";
+    if (/[a-zA-Z]/.test(sizeStr)) return sizeStr;
+    const bytes = parseInt(sizeStr, 10);
+    if (isNaN(bytes)) return sizeStr;
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   }
 
   const idsToDelete = actionTarget !== null ? [actionTarget] : Array.from(selectedNodes);
 
+  const isMobileView = window.innerWidth < 768;
+  const dynamicGridStyle = {
+    display: "grid",
+    gridTemplateColumns: isMobileView ? "minmax(120px, 1fr) 60px 80px" : "minmax(200px, 3fr) 100px 140px 140px 100px",
+    alignItems: "center"
+  };
+
+  const handleMobileTap = (e: React.MouseEvent, id: number) => {
+    e.stopPropagation();
+    setSelectedNodes((prev: Set<number>) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   return (
     <div 
-      style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative" }} 
+      style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative", paddingTop: "calc(env(safe-area-inset-top, 0px) + 0px)" }} 
       onClick={clearSelection}
       onContextMenu={(e) => handleContextMenu(e, null)}
     >
@@ -132,11 +161,11 @@ export default function Bin({ onBack }: { onBack: () => void }) {
       </header>
 
       <div style={styles.listContainer} ref={containerRef}>
-        <div style={styles.listHeaderRow}>
+        <div style={{ ...styles.listHeaderRow, ...dynamicGridStyle }}>
           <div style={styles.cellName}>{t("Name")}</div>
           <div style={styles.cellDefault}>{t("Size")}</div>
-          <div style={styles.cellDefault}>{t("Deleted Time")}</div>
-          <div style={styles.cellDefault}>{t("MD5 Hash")}</div>
+          {!isMobileView && <div style={styles.cellDefault}>{t("Deleted Time")}</div>}
+          {!isMobileView && <div style={styles.cellDefault}>{t("MD5 Hash")}</div>}
           <div style={styles.cellActions}>{t("Actions")}</div>
         </div>
 
@@ -157,13 +186,26 @@ export default function Bin({ onBack }: { onBack: () => void }) {
                 <div 
                   key={node.id} 
                   className="file-row"
-                  onClick={(e) => handleRowClick(e, index, node.id)}
+                  onClick={(e) => {
+                    if (isMobileView) {
+                      e.stopPropagation();
+                      setSelectedNodes((prev: Set<number>) => {
+                        const next = new Set(prev);
+                        if (next.has(node.id)) next.delete(node.id);
+                        else next.add(node.id);
+                        return next;
+                      });
+                    } else {
+                      handleRowClick(e, index, node.id);
+                    }
+                  }}
                   onContextMenu={(e) => {
                     if (!isSelected) setSelectedNodes(new Set([node.id]));
                     handleContextMenu(e, node.id);
                   }}
                   style={{
                     ...styles.listRow, 
+                    ...dynamicGridStyle,
                     backgroundColor: isSelected ? "#e5e7eb" : "transparent",
                   }}
                 >
@@ -188,9 +230,9 @@ export default function Bin({ onBack }: { onBack: () => void }) {
                     <img src={getFileIcon(node.name, isDir)} alt="icon" style={styles.icon} />
                     <span style={{...styles.itemName, color: "#111827"}}>{node.name}</span>
                   </div>
-                  <div style={styles.cellDefault}>{isDir ? "-" : node.size}</div>
-                  <div style={styles.cellDefault}>{formatTime(node.time)}</div>
-                  <div style={{...styles.cellDefault, fontSize: "11px", fontFamily: "monospace"}}>{isDir ? "-" : node.md5.substring(0, 16) + "..."}</div>
+                  <div style={styles.cellDefault}>{isDir ? "-" : formatBytes(node.size)}</div>
+                  {!isMobileView && <div style={styles.cellDefault}>{formatTime(node.time)}</div>}
+                  {!isMobileView && <div style={{...styles.cellDefault, fontSize: "11px", fontFamily: "monospace"}}>{isDir ? "-" : node.md5.substring(0, 16) + "..."}</div>}
                   <div style={styles.cellActions}>
                     <button style={styles.actionBtn} title="Restore" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => {
                       e.stopPropagation();
@@ -275,7 +317,11 @@ export default function Bin({ onBack }: { onBack: () => void }) {
       {contextMenu && (
         <div 
           className="context-menu-box" 
-          style={{...styles.contextMenuBox, top: contextMenu.y, left: contextMenu.x}}
+          style={{
+            ...styles.contextMenuBox, 
+            top: Math.min(contextMenu.y, window.innerHeight - 150), // Sightly smaller offset for fewer items
+            left: Math.min(contextMenu.x, window.innerWidth - 165)
+          }}
           onClick={(e) => e.stopPropagation()} 
         >
           {contextMenu.targetId === null ? (
@@ -305,9 +351,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   breadcrumbBar: { display: "flex", alignItems: "center", fontSize: "12px", color: "#111827", backgroundColor: "#f3f4f6", padding: "8px 12px", borderRadius: "0", border: "1px solid #111827", fontWeight: "600" },
   breadcrumbLink: { cursor: "pointer", color: "#111827", textDecoration: "underline" },
   listContainer: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", position: "relative", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)" },
-  listHeaderRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 140px 140px 100px", padding: "12px 20px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", alignItems: "center", textTransform: "uppercase", letterSpacing: "1px" },
+  listHeaderRow: { padding: "12px 16px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" },
   listBody: { overflowY: "auto", flex: 1 },
-  listRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 140px 140px 100px", padding: "10px 20px", borderBottom: "1px solid #e5e7eb", alignItems: "center", cursor: "pointer", transition: "background-color 0.1s, opacity 0.2s", userSelect: "none" },
+  listRow: { padding: "10px 16px", borderBottom: "1px solid #e5e7eb", cursor: "pointer", transition: "background-color 0.1s, opacity 0.2s", userSelect: "none" },
   cellName: { display: "flex", alignItems: "center", gap: "12px", overflow: "hidden" },
   cellDefault: { fontSize: "13px", color: "#4b5563", whiteSpace: "nowrap" },
   cellActions: { display: "flex", gap: "8px", justifyContent: "flex-end" },

@@ -96,14 +96,22 @@ export default function Uploading() {
 
   const topLevelTasks = activeTasks.filter(t => !t.groupId);
 
+  const isMobileView = window.innerWidth < 768;
+  const dynamicGridStyle = {
+    display: "grid",
+    // 4 columns on mobile (hide text progress), 5 columns on desktop
+    gridTemplateColumns: isMobileView ? "minmax(120px, 1fr) 60px 40px 80px" : "minmax(200px, 3fr) 100px 80px 60px 100px",
+    alignItems: "center"
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <div style={styles.listContainer}>
-        <div style={styles.listHeaderRow}>
+        <div style={{ ...styles.listHeaderRow, ...dynamicGridStyle }}>
           <div>{t("File Name")}</div>
           <div>{t("Speed")}</div>
           <div>{t("ETA")}</div>
-          <div>{t("Progress")}</div>
+          {!isMobileView && <div>{t("Progress")}</div>}
           <div style={{ textAlign: "right" }}>{t("Actions")}</div>
         </div>
 
@@ -123,7 +131,7 @@ export default function Uploading() {
               return (
                 <div key={task.id} style={{ borderBottom: "1px solid #111827" }}>
                   <div 
-                    style={{ display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 80px 60px 100px", alignItems: "center", padding: "16px 20px", cursor: isGroup ? "pointer" : "default", backgroundColor: isExpanded ? "#f3f4f6" : "transparent" }}
+                    style={{ ...dynamicGridStyle, padding: "16px 20px", cursor: isGroup ? "pointer" : "default", backgroundColor: isExpanded ? "#f3f4f6" : "transparent" }}
                     onClick={() => { if (isGroup) setExpandedGroups({...expandedGroups, [task.id]: !isExpanded }) }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: "12px", overflow: "hidden" }}>
@@ -149,9 +157,11 @@ export default function Uploading() {
                     <div style={{ fontSize: "13px", fontWeight: "500", color: "#4b5563" }}>
                       {isPaused || isQueued || isGroup ? "--" : p.eta}
                     </div>
-                    <div style={{ fontSize: "13px", color: isPaused || isQueued ? "#9ca3af" : "#111827", fontWeight: "700", textAlign: "right" }}>
-                      {p.percent}%
-                    </div>
+                    {!isMobileView && (
+                      <div style={{ fontSize: "13px", color: isPaused || isQueued ? "#9ca3af" : "#111827", fontWeight: "700", textAlign: "right" }}>
+                        {p.percent}%
+                      </div>
+                    )}
 
                     <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
                       {isPaused || isQueued ? (
@@ -183,14 +193,14 @@ export default function Uploading() {
                     const cPaused = child.status === "Paused";
                     const cQueued = child.status === "Queued";
                     return (
-                      <div key={child.id} style={{ display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 80px 60px 100px", alignItems: "center", padding: "10px 20px 10px 50px", backgroundColor: "#f9fafb", borderTop: "1px solid #e5e7eb" }}>
+                      <div key={child.id} style={{ ...dynamicGridStyle, padding: isMobileView ? "10px 16px 10px 30px" : "10px 20px 10px 50px", backgroundColor: "#f9fafb", borderTop: "1px solid #e5e7eb" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", fontWeight: "600", color: "#4b5563", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
                           {child.name}
                         </div>
                         <div style={{ fontSize: "11px", fontWeight: "600", color: cPaused || cQueued ? "#ef4444" : "#6b7280" }}>{cPaused ? "PAUSED" : cQueued ? "WAIT" : cp.speed}</div>
                         <div style={{ fontSize: "11px", fontWeight: "600", color: "#6b7280" }}>{cPaused || cQueued ? "--" : cp.eta}</div>
-                        <div style={{ fontSize: "11px", fontWeight: "700", color: cPaused || cQueued ? "#9ca3af" : "#111827", textAlign: "right" }}>{cp.percent}%</div>
+                        {!isMobileView && <div style={{ fontSize: "11px", fontWeight: "700", color: cPaused || cQueued ? "#9ca3af" : "#111827", textAlign: "right" }}>{cp.percent}%</div>}
                         <div style={{ display: "flex", gap: "4px", justifyContent: "flex-end" }}>
                           <button style={{...btnStyle, padding: "4px", color: "#ef4444", borderColor: "#ef4444"}} onClick={() => handleControl(child, 2)}>
                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -214,7 +224,7 @@ export default function Uploading() {
 // --------------------------------------------------------
 const styles: { [key: string]: React.CSSProperties } = {
   listContainer: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", position: "relative", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)" },
-  listHeaderRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 80px 60px 100px", padding: "12px 20px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", alignItems: "center", textTransform: "uppercase", letterSpacing: "1px" },
+  listHeaderRow: { padding: "12px 20px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" },
   statusState: { textAlign: "center", padding: "48px", color: "#111827", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" },
 };
 

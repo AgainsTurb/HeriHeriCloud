@@ -30,6 +30,17 @@ export default function App() {
   const [updateAvailable, setUpdateAvailable] = useState<{ version: string, body: string, url: string } | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
 
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    try {
+      const os = type();
+      setIsMobile(os === 'android' || os === 'ios');
+    } catch (err) {
+      console.warn("Failed to detect OS type:", err);
+    }
+  }, []);
+
   const isUploadingBatch = useRef(false);
   const isSyncing = useRef(false);
 
@@ -445,82 +456,95 @@ export default function App() {
   const renderContent = () => {
     if (activeTab === "home") return <Home status={status} />;
     if (activeTab === "transfer") return <Transfer />;
-    if (activeTab === "settings") return <Settings />;
+    if (activeTab === "settings") return <Settings isMobile={isMobile} AppLogo={AppLogo} AppAuth={AppAuth} />;
     if (activeTab === "rent") return <Rent />;
     return <Home status={status} />;
   };
 
-  return (
-    <div style={styles.appContainer}>
-      <aside style={styles.sidebar}>
-        <div style={styles.logoContainer}>
-          <h1 style={styles.logoText}>HERIHERI</h1>
-          <div 
-            style={{ ...styles.badge, position: "relative", cursor: "pointer" }} 
-            onClick={() => updateAvailable ? setShowUpdateModal(true) : alert(t("You are on the latest version!"))}
-            title={updateAvailable ? t("New update available!") : t("Current Version")}
-          >
-            V{appVersion || "..."}
-            {updateAvailable && <div style={styles.redDot} />}
-          </div>
-        </div>
+  const AppLogo = (
+    <div style={{...styles.logoContainer, marginBottom: isMobile ? 0 : "30px"}}>
+      <h1 style={{...styles.logoText, fontSize: isMobile ? "16px" : "20px"}}>HERIHERI</h1>
+      <div style={{ ...styles.badge, position: "relative", cursor: "pointer" }} onClick={() => updateAvailable ? setShowUpdateModal(true) : alert(t("You are on the latest version!"))}>
+        V{appVersion || "..."}
+        {updateAvailable && <div style={styles.redDot} />}
+      </div>
+    </div>
+  );
 
-        <nav style={styles.navMenu}>
-          <div style={activeTab === "home" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("home")}>
-            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M2 3h6l2 3h12v15H2z"/></svg>
-            {t("All Files")}
-          </div>
-          
-          <hr style={styles.divider} />
-          
-          <div style={activeTab === "transfer" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("transfer")}>
-            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter">
-              <path d="M21 15v4H3v-4M7 10l5 5 5-5M12 15V3"/>
-            </svg>
-            {t("Transfer")}
-          </div>
-          <div style={activeTab === "rent" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("rent")}>
-            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter">
-              <polyline points="16 3 21 8 16 13"/>
-              <line x1="21" y1="8" x2="9" y2="8"/>
-              <polyline points="8 21 3 16 8 11"/>
-              <line x1="3" y1="16" x2="15" y2="16"/>
-            </svg>
-            {t("Rent")}
-          </div>
-
-          <hr style={styles.divider} />
-
-          <div style={activeTab === "settings" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("settings")}>
-            <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            {t("Settings")}
-          </div>
-        </nav>
-
-        <div style={styles.authCard}>
-          {status === "Connected" ? (
-            <div style={styles.profileContainer}>
-              <img src="https://up.woozooo.com/images/u.gif" alt="avatar" style={styles.avatar} />
-              <div style={{ flex: 1 }}>
-                <div style={styles.username}>{username}</div>
-                <div style={styles.statusText}>{t("ONLINE")}</div>
-              </div>
-              <button style={styles.logoutBtn} onClick={handleLogout} title="Logout">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M9 21H3V3h6M16 17l5-5-5-5M21 12H9"/></svg>
-              </button>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              <button style={styles.primaryButton} onClick={() => setShowLogin(true)}>{t("Login")}</button>
-              <button style={styles.secondaryButton} onClick={() => setShowRegister(true)}>{t("Register")}</button>
+  const AppAuth = (
+    <div style={isMobile ? styles.mobileAuthCard : styles.authCard}>
+      {status === "Connected" ? (
+        <div style={{...styles.profileContainer, gap: isMobile ? "8px" : "12px"}}>
+          <img src="https://up.woozooo.com/images/u.gif" alt="avatar" style={styles.avatar} />
+          {!isMobile && (
+            <div style={{ flex: 1 }}>
+              <div style={styles.username}>{username}</div>
+              <div style={styles.statusText}>{t("ONLINE")}</div>
             </div>
           )}
+          <button style={styles.logoutBtn} onClick={handleLogout} title="Logout">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M9 21H3V3h6M16 17l5-5-5-5M21 12H9"/></svg>
+          </button>
         </div>
-      </aside>
+      ) : (
+        <div style={{ display: "flex", gap: "8px", flexDirection: isMobile ? "row" : "column" }}>
+          <button style={{...styles.primaryButton, padding: isMobile ? "6px 12px" : "10px"}} onClick={() => setShowLogin(true)}>{t("Login")}</button>
+          {!isMobile && <button style={styles.secondaryButton} onClick={() => setShowRegister(true)}>{t("Register")}</button>}
+        </div>
+      )}
+    </div>
+  );
 
-      <main style={styles.mainContent}>
-        {renderContent()}
-      </main>
+  const AppNav = (
+    <nav style={isMobile ? styles.mobileNavMenu : styles.navMenu}>
+      <div style={activeTab === "home" ? (isMobile ? styles.mobileNavItemActive : styles.navItemActive) : (isMobile ? styles.mobileNavItem : styles.navItem)} onClick={() => setActiveTab("home")}>
+        <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M2 3h6l2 3h12v15H2z"/></svg>
+        {!isMobile && t("All Files")}
+      </div>
+      {!isMobile && <hr style={styles.divider} />}
+      <div style={activeTab === "transfer" ? (isMobile ? styles.mobileNavItemActive : styles.navItemActive) : (isMobile ? styles.mobileNavItem : styles.navItem)} onClick={() => setActiveTab("transfer")}>
+        <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M21 15v4H3v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        {!isMobile && t("Transfer")}
+      </div>
+      <div style={activeTab === "rent" ? (isMobile ? styles.mobileNavItemActive : styles.navItemActive) : (isMobile ? styles.mobileNavItem : styles.navItem)} onClick={() => setActiveTab("rent")}>
+        <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><polyline points="16 3 21 8 16 13"/><line x1="21" y1="8" x2="9" y2="8"/><polyline points="8 21 3 16 8 11"/><line x1="3" y1="16" x2="15" y2="16"/></svg>
+        {!isMobile && t("Rent")}
+      </div>
+      {!isMobile && <hr style={styles.divider} />}
+      <div style={activeTab === "settings" ? (isMobile ? styles.mobileNavItemActive : styles.navItemActive) : (isMobile ? styles.mobileNavItem : styles.navItem)} onClick={() => setActiveTab("settings")}>
+        <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        {!isMobile && t("Settings")}
+      </div>
+    </nav>
+  );
+
+  return (
+    <div style={{ ...styles.appContainer, flexDirection: "column" }}>
+
+      {/* Main Responsive Grid */}
+      <div style={{ display: "flex", flex: 1, flexDirection: isMobile ? "column" : "row", overflow: "hidden" }}>
+        
+        {/* Desktop Sidebar */}
+        {!isMobile && (
+          <aside style={styles.sidebar}>
+            {AppLogo}
+            {AppNav}
+            {AppAuth}
+          </aside>
+        )}
+
+        {/* Content Area */}
+        <main style={{...styles.mainContent, padding: isMobile ? "16px" : "32px 48px"}}>
+          {renderContent()}
+        </main>
+      </div>
+
+      {/* Mobile Bottom Nav */}
+      {isMobile && (
+        <div style={styles.mobileBottomBar}>
+          {AppNav}
+        </div>
+      )}
 
       {/* --- MODALS --- */}
       {showLogin && (
@@ -664,4 +688,11 @@ const styles: { [key: string]: React.CSSProperties } = {
   inputLabel: { fontSize: "10px", fontWeight: "700", color: "#111827", textTransform: "uppercase", letterSpacing: "1px" },
   input: { padding: "10px 12px", backgroundColor: "#ffffff", color: "#111827", border: "1px solid #111827", borderRadius: "0", fontSize: "13px", outline: "none" },
   redDot: { position: "absolute", top: "-4px", right: "-4px", width: "8px", height: "8px", backgroundColor: "#ef4444", borderRadius: "50%", border: "2px solid #ffffff" },
+
+  mobileHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", backgroundColor: "#ffffff", borderBottom: "1px solid #111827", zIndex: 10 },
+  mobileBottomBar: { backgroundColor: "#ffffff", borderTop: "1px solid #111827", zIndex: 10, padding: "12px 0", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" },
+  mobileNavMenu: { display: "flex", flexDirection: "row", justifyContent: "space-around", width: "100%" },
+  mobileNavItem: { display: "flex", alignItems: "center", justifyContent: "center", padding: "8px", color: "#9ca3af", cursor: "pointer", transition: "color 0.2s" },
+  mobileNavItemActive: { display: "flex", alignItems: "center", justifyContent: "center", padding: "8px", color: "#111827", cursor: "pointer" },
+  mobileAuthCard: { display: "flex", alignItems: "center", gap: "12px" },
 };

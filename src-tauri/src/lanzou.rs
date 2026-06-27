@@ -291,43 +291,61 @@ impl LanzouCloud {
         Ok(json)
     }
 
-    pub async fn init_vfs_root(&mut self) -> Result<String, String> {
+    pub async fn init_vfs_root(&mut self) -> Result<(String, String), String> {
         // Temporarily set stack to root (-1) to search
         let old_stack = self.folder_stack.clone();
         self.folder_stack = vec!["-1".to_string()];
 
         let folders = self.list_folders().await?;
         let mut root_id = String::new();
+        let mut deeper_id = String::new();
 
         for f in folders {
-            if f["name"].as_str().unwrap_or("") == ".heriheri" {
-                root_id = f["fol_id"].as_str().unwrap_or("").to_string();
-                if root_id.is_empty() {
-                    if let Some(n) = f["fol_id"].as_u64() {
-                        root_id = n.to_string();
-                    }
-                }
+            let name = f["name"].as_str().unwrap_or("");
+            let fid = f["fol_id"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| f["fol_id"].as_u64().map(|n| n.to_string()))
+                .unwrap_or_default();
+
+            if name == ".heriheri" {
+                root_id = fid.clone();
+            } else if name == ".deeperdir" {
+                deeper_id = fid.clone();
+            }
+            if !root_id.is_empty() && !deeper_id.is_empty() {
                 break;
             }
         }
 
-        // Create if not found
+        // Create .heriheri if not found
         if root_id.is_empty() {
             println!("[INFO] .heriheri root not found. Creating it...");
             let res = self
                 .create_folder(".heriheri".to_string(), "HeriHeri VFS Root".to_string())
                 .await?;
+            root_id = res["text"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| res["text"].as_u64().map(|n| n.to_string()))
+                .unwrap_or_default();
+        }
 
-            root_id = res["text"].as_str().unwrap_or("").to_string();
-            if root_id.is_empty() {
-                if let Some(n) = res["text"].as_u64() {
-                    root_id = n.to_string();
-                }
-            }
+        // Create .deeperdir if not found
+        if deeper_id.is_empty() {
+            println!("[INFO] .deeperdir overflow not found. Creating it...");
+            let res = self
+                .create_folder(".deeperdir".to_string(), "HeriHeri Overflow".to_string())
+                .await?;
+            deeper_id = res["text"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| res["text"].as_u64().map(|n| n.to_string()))
+                .unwrap_or_default();
         }
 
         self.folder_stack = old_stack; // Restore user's location
-        Ok(root_id)
+        Ok((root_id, deeper_id))
     }
 
     pub async fn list_folders(&self) -> Result<Vec<Value>, String> {
@@ -1052,13 +1070,31 @@ fn rebuild_folder_recursive<'a>(
         // 1. Get the current node's info
         let node = tree.nodes.get(&node_id).cloned().ok_or("Node not found")?;
 
+        let mut depth = 0;
+        let mut curr = new_parent_pid;
+        while curr != 0 {
+            if let Some(n) = tree.nodes.get(&curr) {
+                depth += 1;
+                curr = n.pid;
+            } else {
+                break;
+            }
+        }
+
+        // Override the passed-in parent if we crossed the threshold
+        let actual_target_lanzou_id = if depth >= 2 {
+            tree.deeperdir_lanzou_id.clone()
+        } else {
+            new_parent_lanzou_id.clone()
+        };
+
         if node.node_type == NodeType::Directory {
             // It's a folder. We must create a clone of it in the new destination.
             let res = lanzou
                 .create_folder_in_target(
                     node.name.clone(),
                     "".to_string(),
-                    new_parent_lanzou_id.clone(),
+                    actual_target_lanzou_id.clone(),
                 )
                 .await?;
 
@@ -1101,7 +1137,7 @@ fn rebuild_folder_recursive<'a>(
                     .create_folder_in_target(
                         node.md5.clone(),
                         "".to_string(),
-                        new_parent_lanzou_id.clone(),
+                        actual_target_lanzou_id.clone(), // <-- Use actual_target
                     )
                     .await?;
 
@@ -1132,7 +1168,7 @@ fn rebuild_folder_recursive<'a>(
             } else {
                 // --- Standard Single File Move ---
                 let _ = lanzou
-                    .move_item(node.lanzou_id.clone(), new_parent_lanzou_id)
+                    .move_item(node.lanzou_id.clone(), actual_target_lanzou_id) // <-- Use actual_target
                     .await;
 
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1206,6 +1242,8 @@ pub async fn init_vfs_root(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _ = crate::heriheri::current_timestamp();
+    
     {
         let mut current_phone = state.current_phone.lock().await;
         *current_phone = phone.clone();
@@ -1222,14 +1260,18 @@ pub async fn init_vfs_root(
     let tree_path = app_data_dir.join(file_name);
 
     let mut lanzou = state.lanzou.lock().await;
-    let root_lanzou_id = lanzou.init_vfs_root().await?;
+    let (root_lanzou_id, deeperdir_lanzou_id) = lanzou.init_vfs_root().await?;
 
     let mut vfs_guard = state.vfs.lock().await;
 
-    if let Ok(tree) = VfsTree::load_local(tree_path.clone()) {
+    if let Ok(mut tree) = VfsTree::load_local(tree_path.clone()) {
+        if tree.deeperdir_lanzou_id.is_empty() {
+            tree.deeperdir_lanzou_id = deeperdir_lanzou_id;
+            let _ = tree.save_local();
+        }
         *vfs_guard = Some(tree);
     } else {
-        let mut tree = VfsTree::new(root_lanzou_id, tree_path);
+        let mut tree = VfsTree::new(root_lanzou_id, deeperdir_lanzou_id, tree_path);
         tree.save_local()?;
         *vfs_guard = Some(tree);
     }
@@ -1285,8 +1327,21 @@ pub async fn vfs_create_folder(
     let current_pid = *stack.last().unwrap_or(&0);
 
     if let Some(tree) = vfs_guard.as_mut() {
-        // Resolve the actual Lanzou target folder ID based on where the user is
-        let target_lanzou_folder = if current_pid == 0 {
+        let mut depth = 0;
+        let mut curr = current_pid;
+        while curr != 0 {
+            if let Some(n) = tree.nodes.get(&curr) {
+                depth += 1;
+                curr = n.pid;
+            } else {
+                break;
+            }
+        }
+
+        // Resolve the physical destination
+        let target_lanzou_folder = if depth >= 2 {
+            tree.deeperdir_lanzou_id.clone() // Flatten deep folders
+        } else if current_pid == 0 {
             tree.root_lanzou_id.clone()
         } else {
             tree.nodes
@@ -1649,7 +1704,20 @@ async fn internal_create_folder(
     let mut vfs_guard = state.vfs.lock().await;
 
     if let Some(tree) = vfs_guard.as_mut() {
-        let target_lanzou_folder = if target_pid == 0 {
+        let mut depth = 0;
+        let mut curr = target_pid;
+        while curr != 0 {
+            if let Some(n) = tree.nodes.get(&curr) {
+                depth += 1;
+                curr = n.pid;
+            } else {
+                break;
+            }
+        }
+
+        let target_lanzou_folder = if depth >= 2 {
+            tree.deeperdir_lanzou_id.clone() // Flatten deep folders
+        } else if target_pid == 0 {
             tree.root_lanzou_id.clone()
         } else {
             tree.nodes
@@ -1838,8 +1906,20 @@ pub async fn vfs_move_items(
     let mut vfs_guard = state.vfs.lock().await;
 
     if let Some(tree) = vfs_guard.as_mut() {
-        // Resolve the actual Lanzou physical folder destination
-        let target_lanzou_id = if target_pid == 0 {
+        let mut depth = 0;
+        let mut curr = target_pid;
+        while curr != 0 {
+            if let Some(n) = tree.nodes.get(&curr) {
+                depth += 1;
+                curr = n.pid;
+            } else {
+                break;
+            }
+        }
+
+        let target_lanzou_id = if depth >= 2 {
+            tree.deeperdir_lanzou_id.clone()
+        } else if target_pid == 0 {
             tree.root_lanzou_id.clone()
         } else {
             tree.nodes
@@ -1973,6 +2053,7 @@ pub async fn vfs_restore_items(
                                 .map(|n| n.lanzou_id.clone())
                                 .unwrap_or(tree.root_lanzou_id.clone())
                         };
+
                         let _ = lanzou
                             .move_item(node.lanzou_id.clone(), target_lanzou_id)
                             .await;
@@ -2736,7 +2817,10 @@ pub async fn vfs_rent_item(
 }
 
 #[tauri::command]
-pub async fn vfs_search(query: String, state: tauri::State<'_, crate::lanzou::AppState>) -> Result<Vec<serde_json::Value>, String> {
+pub async fn vfs_search(
+    query: String,
+    state: tauri::State<'_, crate::lanzou::AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
     let vfs_guard = state.vfs.lock().await;
     let tree = vfs_guard.as_ref().ok_or("VFS Offline")?;
     let q = query.to_lowercase();
@@ -2747,20 +2831,20 @@ pub async fn vfs_search(query: String, state: tauri::State<'_, crate::lanzou::Ap
             // Build the string path recursively upwards
             let mut path_parts = Vec::new();
             let mut current_pid = node.pid;
-            
+
             while let Some(parent) = tree.nodes.get(&current_pid) {
                 path_parts.push(parent.name.clone());
                 current_pid = parent.pid;
             }
             path_parts.push("All Files".to_string());
             path_parts.reverse();
-            
+
             // Merge the path_str into the standard node JSON response
             let mut json_node = serde_json::to_value(node).map_err(|e| e.to_string())?;
             json_node["path_str"] = serde_json::Value::String(path_parts.join(" > "));
             results.push(json_node);
         }
     }
-    
+
     Ok(results)
 }

@@ -41,20 +41,55 @@ function FileRowNode({ node, index, isSelected, isCut, formatTime, formatBytes, 
     position: "relative"
   };
 
+  const isMobileView = window.innerWidth < 768;
+
+  const dynamicGridStyle = {
+    display: "grid",
+    gridTemplateColumns: isMobileView ? "minmax(150px, 1fr) 70px 100px" : "minmax(200px, 3fr) 100px 140px 140px 100px",
+    alignItems: "center"
+  };
+
+  const clickTimeoutRef = useRef<any>(null);
+
+  const handleMobileTap = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (clickTimeoutRef.current) {
+      // Double tap detected! Clear timer and open.
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+      if (isDir) { navigateToFolder(node.id); } else { openMediaWindow(node); }
+    } else {
+      // Single tap started. Wait 250ms to ensure it's not a double-tap.
+      clickTimeoutRef.current = setTimeout(() => {
+        clickTimeoutRef.current = null;
+        setSelectedNodes((prev: Set<number>) => {
+          const next = new Set(prev);
+          if (next.has(node.id)) next.delete(node.id);
+          else next.add(node.id);
+          return next;
+        });
+      }, 250);
+    }
+  };
+
   return (
     <div 
       ref={setCombinedRef}
-      style={style}
+      style={{ ...style, ...dynamicGridStyle }} // Use dynamic grid sizing
       {...attributes}
       {...listeners}
       className="file-row"
-      onClick={(e) => handleRowClick(e, index, node.id)}
-      onDoubleClick={(e) => {
-        e.stopPropagation();
-        if (isDir) {
-          navigateToFolder(node.id);
+      onClick={(e) => {
+        if (isMobileView) {
+          handleMobileTap(e);
         } else {
-          openMediaWindow(node);
+          handleRowClick(e, index, node.id);
+        }
+      }}
+      onDoubleClick={(e) => {
+        if (!isMobileView) {
+          e.stopPropagation();
+          if (isDir) { navigateToFolder(node.id); } else { openMediaWindow(node); }
         }
       }}
       onContextMenu={(e) => {
@@ -71,19 +106,25 @@ function FileRowNode({ node, index, isSelected, isCut, formatTime, formatBytes, 
       </div>
       <div style={styles.cellDefault}>{isDir ? "-" : formatBytes(node.size)}</div>
       <div style={styles.cellDefault}>{formatTime(node.time)}</div>
-      <div style={{...styles.cellDefault, fontSize: "11px", fontFamily: "monospace"}}>{isDir ? "-" : node.md5.substring(0, 16) + "..."}</div>
-      <div style={styles.cellActions}>
-        <button style={styles.actionBtn} title="Share" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => triggerShare(e, node.id)}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13"/></svg>
-        </button>
-        <button style={styles.actionBtn} title="Delete" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => {
-          e.stopPropagation();
-          if (!isSelected) setSelectedNodes(new Set([node.id]));
-          setShowBatchDelete(true);
-        }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-        </button>
-      </div>
+      
+      {/* Hide metadata slots safely on mobile to prevent squishing text columns */}
+      {!isMobileView && (
+        <>
+          <div style={{...styles.cellDefault, fontSize: "11px", fontFamily: "monospace"}}>{isDir ? "-" : node.md5.substring(0, 16) + "..."}</div>
+          <div style={styles.cellActions}>
+            <button style={styles.actionBtn} title="Share" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => triggerShare(e, node.id)}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13"/></svg>
+            </button>
+            <button style={styles.actionBtn} title="Delete" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => {
+              e.stopPropagation();
+              if (!isSelected) setSelectedNodes(new Set([node.id]));
+              setShowBatchDelete(true);
+            }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -145,6 +186,55 @@ export default function Home({ status }: { status: string }) {
 
   const [searchQuery, setSearchQuery] = useState("");
   const isSearchingRef = useRef(false);
+
+  const [showMoveModal, setShowMoveModal] = useState(false);
+  const [moveFolders, setMoveFolders] = useState<any[]>([]);
+  const [moveBreadcrumbs, setMoveBreadcrumbs] = useState<{id: number, name: string}[]>([]);
+  const [originalPid, setOriginalPid] = useState<number>(0);
+
+  const fetchMoveDir = async () => {
+    try {
+      const data = await invoke<any[]>("vfs_list_dir");
+      // Filter out files AND prevent moving a folder into itself
+      setMoveFolders(data.filter((n: any) => n.node_type === "Directory" && !selectedNodes.has(n.id)));
+      const crumbs = await invoke<{id: number, name: string}[]>("vfs_get_breadcrumbs").catch(() => []);
+      setMoveBreadcrumbs(crumbs);
+    } catch (err) {
+      console.error("Move fetch error:", err);
+    }
+  };
+
+  const handleMoveClick = async () => {
+    if (selectedNodes.size === 0) return;
+    const pid = await invoke<number>("vfs_get_current_pid").catch(() => 0);
+    setOriginalPid(pid);
+    setShowMoveModal(true);
+    fetchMoveDir(); 
+  };
+
+  const confirmMove = async () => {
+    setShowMoveModal(false);
+    setIsLoading(true);
+    try {
+      const targetPid = await invoke<number>("vfs_get_current_pid").catch(() => 0);
+      await invoke("vfs_sync_pull").catch((e) => console.warn("Sync pull skipped:", e));
+      await invoke("vfs_move_items", { itemIds: Array.from(selectedNodes), targetPid });
+      await invoke("vfs_sync_push").catch((e) => console.warn("Sync push skipped:", e));
+      
+      await invoke("vfs_enter_folder", { id: originalPid }); // Restore original view
+      clearSelection();
+      fetchDirectory();
+    } catch (err) {
+      showAlert(t("Move Error"), String(err));
+      setIsLoading(false);
+    }
+  };
+
+  const cancelMove = async () => {
+    setShowMoveModal(false);
+    await invoke("vfs_enter_folder", { id: originalPid }); // Restore original view
+    fetchDirectory(); 
+  };
 
   async function handleSearch(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
@@ -434,25 +524,63 @@ export default function Home({ status }: { status: string }) {
   }
 
   async function handleUpload() {
-    try {
-      const selected = await open({ multiple: true, title: "Select Files to Upload" });
-      if (!selected || selected.length === 0) return;
-      
-      const paths = Array.isArray(selected) ? selected : [selected];
-      const currentPid = await invoke<number>("vfs_get_current_pid").catch(() => 0);
-      const activeTasks = JSON.parse(localStorage.getItem("heriheri_active") || "[]");
-      
-      paths.forEach(filePath => {
-        const fileName = filePath.split(/[/\\]/).pop() || "Unknown File";
-        const taskId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
-        activeTasks.push({ id: taskId, isGroup: false, name: fileName, type: "Upload", status: "Queued", filePath, targetPid: currentPid, resumeFolder: "", resumeChunk: 0 });
-      });
-      
-      localStorage.setItem("heriheri_active", JSON.stringify(activeTasks));
-      window.dispatchEvent(new CustomEvent("TASK_START"));
-      showAlert("Upload Queued", `${paths.length} file(s) added to the queue.`);
-    } catch (error) {
-      console.error("Upload dialog error:", error);
+    const isMobile = window.innerWidth < 768;
+
+    if (isMobile) {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.onchange = async (e: any) => {
+        const files = Array.from(e.target.files as FileList);
+        if (files.length === 0) return;
+
+        const currentPid = await invoke<number>("vfs_get_current_pid").catch(() => 0);
+        const activeTasks = JSON.parse(localStorage.getItem("heriheri_active") || "[]");
+        
+        const { cacheDir } = await import("@tauri-apps/api/path");
+        const { writeFile } = await import("@tauri-apps/plugin-fs");
+        const localCacheDir = await cacheDir();
+
+        for (const file of files) {
+          const fileName = file.name;
+          
+          const tempPath = `${localCacheDir}/${fileName}`;
+          
+          // Read bytes via browser and dump into Tauri cache
+          const arrayBuffer = await file.arrayBuffer();
+          await writeFile(tempPath, new Uint8Array(arrayBuffer));
+
+          const taskId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+          activeTasks.push({ id: taskId, isGroup: false, name: fileName, type: "Upload", status: "Queued", filePath: tempPath, targetPid: currentPid, resumeFolder: "", resumeChunk: 0 });
+        }
+        
+        localStorage.setItem("heriheri_active", JSON.stringify(activeTasks));
+        window.dispatchEvent(new CustomEvent("TASK_START"));
+        showAlert(t("Upload Queued"), `${files.length} file(s) added to the queue.`);
+      };
+      input.click();
+    } else {
+      // --- PC Native Upload (Unchanged to retain full system paths) ---
+      try {
+        const selected = await open({ multiple: true, title: "Select Files to Upload" });
+        if (!selected || selected.length === 0) return;
+        
+        const paths = Array.isArray(selected) ? selected : [selected];
+        const currentPid = await invoke<number>("vfs_get_current_pid").catch(() => 0);
+        const activeTasks = JSON.parse(localStorage.getItem("heriheri_active") || "[]");
+        
+        paths.forEach(filePath => {
+          const fileName = filePath.split(/[/\\]/).pop() || "Unknown File";
+          const taskId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+          activeTasks.push({ id: taskId, isGroup: false, name: fileName, type: "Upload", status: "Queued", filePath, targetPid: currentPid, resumeFolder: "", resumeChunk: 0 });
+        });
+        
+        localStorage.setItem("heriheri_active", JSON.stringify(activeTasks));
+        window.dispatchEvent(new CustomEvent("TASK_START"));
+        showAlert(t("Upload Queued"), `${paths.length} file(s) added to the queue.`);
+      } catch (error) {
+        console.error("Upload dialog error:", error);
+      }
     }
   }
 
@@ -507,48 +635,82 @@ export default function Home({ status }: { status: string }) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   }
 
-  const copyQrToClipboard = (id: string) => {
+  const copyQrToClipboard = (id: string, fallbackText: string) => {
     const canvas = document.getElementById(id) as HTMLCanvasElement;
     if (!canvas) return;
-    canvas.toBlob(async (blob) => {
-      if (blob) {
-        try {
-          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-        } catch (err) {
-          showAlert(t("Copy Error"), t("Failed to copy image to clipboard."));
-        }
-      }
-    });
+
+    try {
+      // 1. Create a Promise instead of using an async/await pause
+      const blobPromise = new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Canvas blob failed"));
+        }, "image/png");
+      });
+
+      // 2. Pass the Promise DIRECTLY into the ClipboardItem
+      const item = new ClipboardItem({ "image/png": blobPromise });
+
+      // 3. Call write() SYNCHRONOUSLY before the click gesture expires!
+      navigator.clipboard.write([item])
+        .then(() => showAlert(t("Copied"), t("Image copied to clipboard.")))
+        .catch(() => {
+          // If Android WebView completely blocks images, fall back safely
+          navigator.clipboard.writeText(fallbackText);
+          showAlert(t("Copied"), t("Share code text copied (Image copy not supported)."));
+        });
+    } catch (err) {
+      navigator.clipboard.writeText(fallbackText);
+      showAlert(t("Copied"), t("Share code text copied (Image copy not supported)."));
+    }
   };
 
   if (showBin) {
     return <Bin onBack={() => setShowBin(false)} />;
   }
 
+  const isMobileView = breadcrumbs.length > 0 && breadcrumbs[0].id === -1 ? false : (window.innerWidth < 768);
+  
+  const dynamicGridStyle = {
+    display: "grid",
+    gridTemplateColumns: isMobileView ? "minmax(150px, 1fr) 70px 100px" : "minmax(200px, 3fr) 100px 140px 140px 100px",
+    alignItems: "center"
+  };
+
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <div 
-        style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative" }} 
+        style={{ 
+          display: "flex", 
+          flexDirection: "column", 
+          height: "100%", 
+          position: "relative",
+          paddingTop: "calc(env(safe-area-inset-top, 0px) + 0px)"
+        }} 
         onClick={clearSelection} 
         onContextMenu={(e) => handleContextMenu(e, null)}
       >
         <header style={styles.header}>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-                <button style={{...styles.secondaryButton, padding: "6px 12px", display: "flex", alignItems: "center", gap: "6px"}} onClick={() => setShowBin(true)}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M3 6h18M19 6v14H5V6m3 0V4h8v2"/></svg>
-                  {t("Bin")}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", width: "100%" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                <button 
+                  style={{ ...styles.secondaryButton, padding: "8px", display: "flex", alignItems: "center", justifyContent: "center" }} 
+                  onClick={() => setShowBin(true)}
+                  title={t("Bin")}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M3 6h18M19 6v14H5V6m3 0V4h8v2"/></svg>
                 </button>
+                
               </div>
-              <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+              <div style={{ position: "relative", display: "flex", alignItems: "center", flex: 1, maxWidth: isMobileView ? "100%" : "300px" }}>
                 <input 
                   type="text" 
-                  placeholder={t("Search files & folders...")} 
+                  placeholder={t("Search...")}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onKeyDown={handleSearch}
-                  style={{...styles.input, width: "300px", padding: "8px 32px 8px 12px"}}
+                  style={{...styles.input, width: "100%", padding: "8px 32px 8px 12px"}}
                 />
                 {searchQuery && (
                   <svg 
@@ -578,12 +740,16 @@ export default function Home({ status }: { status: string }) {
         </header>
 
         <div style={styles.listContainer} ref={containerRef}>
-          <div style={styles.listHeaderRow}>
+          <div style={{ ...styles.listHeaderRow, ...dynamicGridStyle }}>
             <div style={styles.cellName}>{t("Name")}</div>
             <div style={styles.cellDefault}>{t("Size")}</div>
             <div style={styles.cellDefault}>{t("Time")}</div>
-            <div style={styles.cellDefault}>{t("MD5 Hash")}</div>
-            <div style={styles.cellActions}>{t("Actions")}</div>
+            {!isMobileView && (
+              <>
+                <div style={styles.cellDefault}>{t("MD5 Hash")}</div>
+                <div style={styles.cellActions}>{t("Actions")}</div>
+              </>
+            )}
           </div>
 
           {isLoading && <div style={styles.statusState}>{t("SYNCING & LOADING...")}</div>}
@@ -698,7 +864,7 @@ export default function Home({ status }: { status: string }) {
                       <div key={idx} style={{ minWidth: "140px", maxWidth: "140px", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", border: "2px solid #111827", padding: "12px", backgroundColor: "#f9fafb" }}>
                         <div 
                           style={{ cursor: "pointer", border: "2px solid #111827", backgroundColor: "#ffffff", padding: "8px", transition: "transform 0.1s" }}
-                          onClick={() => copyQrToClipboard(`qr-${idx}`)}
+                          onClick={() => copyQrToClipboard(`qr-${idx}`, item.code)}
                           onMouseDown={e => e.currentTarget.style.transform = "scale(0.95)"}
                           onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
                           onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
@@ -770,7 +936,11 @@ export default function Home({ status }: { status: string }) {
         {contextMenu && (
           <div 
             className="context-menu-box" 
-            style={{...styles.contextMenuBox, top: contextMenu.y, left: contextMenu.x}}
+            style={{
+              ...styles.contextMenuBox, 
+              top: Math.min(contextMenu.y, window.innerHeight - 300), 
+              left: Math.min(contextMenu.x, window.innerWidth - 165)
+            }}
             onClick={(e) => e.stopPropagation()}
           >
             {contextMenu.targetId === null ? (
@@ -789,6 +959,7 @@ export default function Home({ status }: { status: string }) {
             ) : (
               <>
                 <div style={styles.contextMenuItem} onClick={() => { triggerCut(Array.from(selectedNodes)); closeMenu(); }}>{t("Cut")}</div>
+                <div style={styles.contextMenuItem} onClick={() => { handleMoveClick(); closeMenu(); }}>{t("Move")}</div>
                 <div style={styles.contextMenuItem} onClick={(e) => { triggerShare(e as any, contextMenu.targetId!); closeMenu(); }}>{t("Share")}</div>
                 <div style={styles.contextMenuItem} onClick={() => {
                   const targetNode = nodes.find(n => n.id === contextMenu.targetId);
@@ -802,9 +973,26 @@ export default function Home({ status }: { status: string }) {
                   if (selectedFiles.length === 0) { closeMenu(); return; }
 
                   const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+                  const isMobile = window.innerWidth < 768;
                   let dir = "";
 
-                  if (config.useDefaultDownloadPath && config.downloadPath) {
+                  if (isMobile) {
+                    const { downloadDir } = await import("@tauri-apps/api/path");
+                    const { mkdir } = await import("@tauri-apps/plugin-fs");
+                    let dDir = await downloadDir();
+                    
+                    if (dDir.includes("Android/data/")) {
+                      dDir = dDir.split("Android/data/")[0] + "Download";
+                    }
+                    
+                    dir = `${dDir.replace(/[/\\]$/, "")}/HeriHeriCloud`;
+                    
+                    try {
+                      await mkdir(dir, { recursive: true });
+                    } catch (e) {
+                      // Silently ignore if folder already exists
+                    }
+                  } else if (config.useDefaultDownloadPath && config.downloadPath) {
                     dir = config.downloadPath;
                   } else {
                     const selected = await open({ directory: true, title: "Select Download Folder" });
@@ -863,12 +1051,64 @@ export default function Home({ status }: { status: string }) {
 
                   localStorage.setItem("heriheri_down_active", JSON.stringify(activeDown));
                   window.dispatchEvent(new CustomEvent("DOWN_TASK_START"));
-                  showAlert("Download Queued", `Items added to the queue.`);
+                  if (isMobile) {
+                    showAlert(t("Download Queued"), t(`Downloading to scoped app storage:\n${dir}\n\nCheck your File Manager's Android/data folder.`));
+                  } else {
+                    showAlert(t("Download Queued"), t("Items added to the queue."));
+                  }
                   closeMenu();
                 }}>{t("Download")}</div>
                 <div style={{...styles.contextMenuItem, color: "#ef4444"}} onClick={() => { triggerBatchDelete(); closeMenu(); }}>{t("Delete")}</div>
               </>
             )}
+          </div>
+        )}
+
+        {showMoveModal && (
+          <div style={styles.modalOverlay} onClick={cancelMove}>
+            <div style={{...styles.modalBox, width: "480px"}} onClick={(e) => e.stopPropagation()}>
+              <h3 style={styles.modalTitle}>{t("Select Destination")}</h3>
+              
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", backgroundColor: "#f3f4f6", padding: "8px 12px", border: "2px solid #111827", fontSize: "12px", fontWeight: "700", overflowX: "auto", textTransform: "uppercase" }}>
+                {moveBreadcrumbs.map((crumb, idx) => (
+                   <span key={crumb.id} style={{ display: "flex", alignItems: "center" }}>
+                     <span 
+                       style={{ cursor: "pointer", textDecoration: "underline", color: "#111827", whiteSpace: "nowrap" }} 
+                       onClick={async () => { await invoke("vfs_enter_folder", { id: crumb.id }); fetchMoveDir(); }}
+                     >
+                       {crumb.id === 0 || crumb.name === "All Files" ? t("All Files") : crumb.name}
+                     </span>
+                     {idx < moveBreadcrumbs.length - 1 && <span style={{ margin: "0 6px", color: "#9ca3af" }}>/</span>}
+                   </span>
+                ))}
+              </div>
+
+              <div style={{ border: "2px solid #111827", height: "240px", overflowY: "auto", display: "flex", flexDirection: "column", backgroundColor: "#ffffff" }}>
+                 {moveFolders.length === 0 && (
+                   <div style={{ padding: "32px", textAlign: "center", color: "#4b5563", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" }}>
+                     {t("No subfolders")}
+                   </div>
+                 )}
+                 {moveFolders.map(folder => (
+                    <div 
+                      key={folder.id} 
+                      style={{ padding: "10px 16px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", gap: "12px", cursor: "pointer", transition: "background-color 0.1s" }}
+                      onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f3f4f6"}
+                      onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                      onDoubleClick={async () => { await invoke("vfs_enter_folder", { id: folder.id }); fetchMoveDir(); }}
+                      title={t("Double-click to enter")}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#111827" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#111827" }}>{folder.name}</span>
+                    </div>
+                 ))}
+              </div>
+
+              <div style={styles.modalActions}>
+                <button style={styles.secondaryButton} onClick={cancelMove}>{t("Cancel")}</button>
+                <button style={styles.primaryButton} onClick={confirmMove}>{t("Move Here")}</button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -882,9 +1122,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   breadcrumbBar: { display: "flex", alignItems: "center", fontSize: "12px", color: "#111827", backgroundColor: "#f3f4f6", padding: "8px 12px", borderRadius: "0", border: "1px solid #111827", fontWeight: "600" },
   breadcrumbLink: { cursor: "pointer", color: "#111827", textDecoration: "underline" },
   listContainer: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", position: "relative", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)", userSelect: "none" },
-  listHeaderRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 140px 140px 100px", padding: "12px 20px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", alignItems: "center", textTransform: "uppercase", letterSpacing: "1px" },
+  listHeaderRow: { padding: "12px 16px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" },
   listBody: { overflowY: "auto", flex: 1 },
-  listRow: { display: "grid", gridTemplateColumns: "minmax(200px, 3fr) 100px 140px 140px 100px", padding: "10px 20px", borderBottom: "1px solid #e5e7eb", alignItems: "center", cursor: "pointer", transition: "background-color 0.1s, opacity 0.2s", userSelect: "none" },
+  listRow: { padding: "10px 16px", borderBottom: "1px solid #e5e7eb", cursor: "pointer", transition: "background-color 0.1s, opacity 0.2s", userSelect: "none" },
   cellName: { display: "flex", alignItems: "center", gap: "12px", overflow: "hidden" },
   cellDefault: { fontSize: "13px", color: "#4b5563", whiteSpace: "nowrap" },
   cellActions: { display: "flex", gap: "8px", justifyContent: "flex-end" },

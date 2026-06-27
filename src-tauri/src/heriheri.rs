@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 const ALLOWED_EXTS: &[&str] = &[
     "doc",
@@ -82,6 +83,9 @@ const ALLOWED_EXTS: &[&str] = &[
     "brushset",
 ];
 
+static TIME_OFFSET: AtomicI64 = AtomicI64::new(0);
+static HAS_SYNCED_TIME: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeType {
     Directory,
@@ -122,6 +126,7 @@ pub struct VfsNode {
 pub struct VfsTree {
     pub last_modified: u64,
     pub root_lanzou_id: String,
+    pub deeperdir_lanzou_id: String,
     pub nodes: HashMap<u64, VfsNode>,
     pub next_id: u64,
     pub file_path: PathBuf,
@@ -129,10 +134,11 @@ pub struct VfsTree {
 
 impl VfsTree {
     /// Creates a fresh, empty Virtual File System
-    pub fn new(root_lanzou_id: String, file_path: PathBuf) -> Self {
+    pub fn new(root_lanzou_id: String, deeperdir_lanzou_id: String, file_path: PathBuf) -> Self {
         Self {
             last_modified: 0,
             root_lanzou_id,
+            deeperdir_lanzou_id,
             nodes: HashMap::new(),
             next_id: 1,
             file_path,
@@ -166,6 +172,7 @@ impl VfsTree {
 
         let last_modified = h_parts[1].parse::<u64>().unwrap_or(0);
         let root_lanzou_id = h_parts[3].to_string();
+        let deeperdir_lanzou_id = h_parts.get(4).unwrap_or(&"").to_string();
 
         let mut nodes = HashMap::new();
         let mut max_id = 0;
@@ -203,6 +210,7 @@ impl VfsTree {
         Ok(Self {
             last_modified,
             root_lanzou_id,
+            deeperdir_lanzou_id,
             nodes,
             next_id: max_id + 1,
             file_path,
@@ -215,10 +223,11 @@ impl VfsTree {
 
         // Header
         output.push_str(&format!(
-            "V1|{}|{}|{}\n",
+            "V1|{}|{}|{}|{}\n",
             self.last_modified,
             self.nodes.len(),
-            self.root_lanzou_id
+            self.root_lanzou_id,
+            self.deeperdir_lanzou_id
         ));
 
         // Rows
@@ -461,6 +470,7 @@ impl VfsTree {
         Self {
             last_modified: std::cmp::max(self.last_modified, cloud_tree.last_modified),
             root_lanzou_id: cloud_tree.root_lanzou_id.clone(),
+            deeperdir_lanzou_id: cloud_tree.deeperdir_lanzou_id.clone(),
             nodes: repaired_nodes,
             next_id: std::cmp::max(self.next_id, cloud_tree.next_id),
             file_path: self.file_path.clone(),
@@ -474,10 +484,49 @@ impl VfsTree {
 
 /// Generates the current Unix epoch timestamp in seconds
 pub fn current_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    // 1. If we haven't synced yet, do it EXACTLY ONCE per session.
+    if !HAS_SYNCED_TIME.load(Ordering::Relaxed) {
+        // --- MINIMUM FIX: std::thread::spawn completely escapes Tauri's Tokio context, preventing the Panic! ---
+        let offset_result = std::thread::spawn(|| {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_millis(1500))
+                .user_agent("Mozilla/5.0")
+                .build()
+                .ok()?;
+
+            let resp = client.get("http://f.m.suning.com/api/ct.do").send().ok()?;
+            let json = resp.json::<serde_json::Value>().ok()?;
+            let network_time = json["currentTime"].as_i64()?;
+
+            let local_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+
+            // Calculate how far ahead or behind the hardware clock is
+            Some(network_time - local_time)
+        }).join().unwrap_or(None);
+
+        if let Some(offset) = offset_result {
+            println!("[TIME-SYNC] Hardware clock offset established: {}ms", offset);
+            TIME_OFFSET.store(offset, Ordering::Relaxed);
+        } else {
+            println!("[TIME-SYNC] Network unavailable. Proceeding with zero offset.");
+        }
+        
+        HAS_SYNCED_TIME.store(true, Ordering::Relaxed);
+    }
+
+    // 2. For all 10,000 subsequent file operations, just do the ultra-fast math!
+    let local_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_millis() as u64
+        .as_millis() as i64;
+
+    let offset = TIME_OFFSET.load(Ordering::Relaxed);
+    
+    // Return the perfectly synchronized time
+    (local_time + offset) as u64
 }
 
 /// Checks if an extension is permitted by Lanzou natively.

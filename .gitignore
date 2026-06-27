@@ -25,6 +25,13 @@ src-tauri/target/
 **/*.rs.bk
 Cargo.lock.bk
 
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/.idea/
+src-tauri/gen/android/build/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/app/.cxx/
+src-tauri/gen/android/local.properties
+
 # -----------------------------
 # OS Generated Files
 # -----------------------------
