@@ -1243,7 +1243,7 @@ pub async fn init_vfs_root(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _ = crate::heriheri::current_timestamp();
-    
+
     {
         let mut current_phone = state.current_phone.lock().await;
         *current_phone = phone.clone();
@@ -1889,6 +1889,7 @@ pub async fn vfs_batch_delete(
                 }
             }
         }
+        tree.touch();
         tree.save_local()?;
         Ok(true)
     } else {
@@ -1987,6 +1988,7 @@ pub async fn vfs_move_items(
                 }
             }
         }
+        tree.touch();
         tree.save_local()?;
         Ok(true)
     } else {
@@ -2068,6 +2070,7 @@ pub async fn vfs_restore_items(
                 }
             }
         }
+        tree.touch();
         tree.save_local()?;
         Ok(true)
     } else {
@@ -2135,6 +2138,7 @@ pub async fn vfs_rename_item(
         } else {
             return Err("Item not found in local VFS".to_string());
         }
+        tree.touch();
 
         tree.save_local()?;
         Ok(true)
