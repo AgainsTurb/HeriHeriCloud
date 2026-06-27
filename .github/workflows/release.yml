@@ -61,25 +61,28 @@ jobs:
         id: changelog
         shell: bash
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          ENGLISH=$(sed -n '/<summary><strong>🇬🇧 English Version/,/<\/details>/p' CHANGELOG.md)
+          VERSION="${GITHUB_REF_NAME#v}"
 
-          BODY=$(echo "$ENGLISH" | awk -v ver="$VERSION" '
+          # Extract everything from "## [VERSION]" up to the next "## " or EOF.
+          BODY=$(awk -v ver="$VERSION" '
             BEGIN { found=0 }
             /^## \[/ {
-              if (index($0, ver)) { found=1; print; next }
+              if (index($0, "[" ver "]")) { found=1; print; next }
               else if (found) exit
             }
             found { print }
-          ')
+          ' CHANGELOG.md)
 
           if [ -z "$BODY" ]; then
-            BODY="No changelog found for version $VERSION."
+            BODY="No changelog found for version ${VERSION}."
           fi
 
-          echo "body<<EOF" >> $GITHUB_OUTPUT
-          echo "$BODY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Pass the multiline body to the next step
+          {
+            echo "body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Build Tauri Application & Create Release
         uses: tauri-apps/tauri-action@v0

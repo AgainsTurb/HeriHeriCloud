@@ -5,6 +5,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
+import { keepScreenOn } from "tauri-plugin-keep-screen-on-api";
 import "./App.css";
 
 import Home from "./Components/Home";
@@ -259,6 +260,7 @@ export default function App() {
           console.log("[SYNC] Upload batch finished. Pushing to cloud...");
           await invoke("vfs_sync_push").catch(e => console.warn("Sync push skipped:", e));
           isSyncing.current = false;
+          keepScreenOn(false).catch(() => {});
           window.dispatchEvent(new CustomEvent("TASK_END")); // Refresh UI globally
         }
         return;
@@ -277,6 +279,7 @@ export default function App() {
       if (!isUploadingBatch.current) {
         isUploadingBatch.current = true;
         isSyncing.current = true;
+        keepScreenOn(true).catch(() => {});
         console.log("[SYNC] Upload batch starting. Pulling from cloud...");
         await invoke("vfs_sync_pull").catch(e => console.warn("Sync pull skipped:", e));
         isSyncing.current = false;
@@ -363,6 +366,14 @@ export default function App() {
   useEffect(() => {
     const processDownQueue = () => {
       let active = JSON.parse(localStorage.getItem("heriheri_down_active") || "[]");
+
+      const pendingOrRunning = active.filter((t: any) => !t.isGroup && (t.status === "Queued" || t.status === "Running"));
+      if (pendingOrRunning.length === 0) {
+        keepScreenOn(false).catch(() => {});
+        return;
+      } else {
+        keepScreenOn(true).catch(() => {});
+      }
 
       const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
       const limit = config.concurrentDownloads || 2;

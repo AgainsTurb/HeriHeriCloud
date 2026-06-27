@@ -7,10 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-<details>
-<summary><strong>🇨🇳 中文版本（点击展开）</strong></summary>
-
-## [1.0.0] – 2026-06-24
+## [1.0.0] – 2026-06-28
 
 ### 新增
 - 添加了多语言支持（英语/中文）。
@@ -22,17 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 修复
 - 修复了 Windows 下安装程序路径错误。
 
----
-
-</details>
-
----
-
-<details>
-<summary><strong>🇬🇧 English Version (click to expand)</strong></summary>
-
-## [1.0.0] – 2026-06-24
-
 ### Added
 - Multi-language support (English/Chinese).
 - System tray icon.
@@ -42,9 +28,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fixed installer path error on Windows.
-
----
-
-</details>
 
 ---

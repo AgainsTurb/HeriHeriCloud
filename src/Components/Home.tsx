@@ -161,6 +161,25 @@ export default function Home({ status }: { status: string }) {
   const [breadcrumbs, setBreadcrumbs] = useState<{id: number, name: string}[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const breadcrumbRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef({ isDown: false, startX: 0, scrollLeft: 0 });
+
+  const handleCrumbWheel = (e: React.WheelEvent) => {
+    if (breadcrumbRef.current) breadcrumbRef.current.scrollLeft += e.deltaY;
+  };
+  const handleCrumbDown = (e: React.MouseEvent) => {
+    if (!breadcrumbRef.current) return;
+    dragRef.current.isDown = true;
+    dragRef.current.startX = e.pageX - breadcrumbRef.current.offsetLeft;
+    dragRef.current.scrollLeft = breadcrumbRef.current.scrollLeft;
+  };
+  const handleCrumbLeaveOrUp = () => { dragRef.current.isDown = false; };
+  const handleCrumbMove = (e: React.MouseEvent) => {
+    if (!dragRef.current.isDown || !breadcrumbRef.current) return;
+    e.preventDefault();
+    const x = e.pageX - breadcrumbRef.current.offsetLeft;
+    breadcrumbRef.current.scrollLeft = dragRef.current.scrollLeft - (x - dragRef.current.startX);
+  };
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
@@ -404,18 +423,24 @@ export default function Home({ status }: { status: string }) {
     // Direct the new window to the correct HashRoute
     const routeUrl = `index.html#/${routePath}?url=${streamUrl}&title=${title}&isAudio=${isAudio}`;
 
-    const viewerWindow = new WebviewWindow(`viewer-${node.id}`, {
-      url: routeUrl,
-      title: `Viewing: ${node.name}`,
-      width: 854,
-      height: wHeight,
-      center: true,
-      resizable: true,
-    });
+    const isMobile = window.innerWidth < 768;
 
-    viewerWindow.once('tauri://error', function () {
-      console.warn("Window might already exist. Focusing instead.");
-    });
+    if (isMobile) {
+      window.location.hash = `/${routePath}?url=${streamUrl}&title=${title}&isAudio=${isAudio}`;
+    } else {
+      const viewerWindow = new WebviewWindow(`viewer-${node.id}`, {
+        url: routeUrl,
+        title: `Viewing: ${node.name}`,
+        width: 854,
+        height: wHeight,
+        center: true,
+        resizable: true,
+      });
+
+      viewerWindow.once('tauri://error', function () {
+        console.warn("Window might already exist. Focusing instead.");
+      });
+    }
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -691,7 +716,7 @@ export default function Home({ status }: { status: string }) {
         onContextMenu={(e) => handleContextMenu(e, null)}
       >
         <header style={styles.header}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", width: "100%" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
                 <button 
@@ -726,15 +751,35 @@ export default function Home({ status }: { status: string }) {
                 )}
               </div>
             </div>
-            <div style={styles.breadcrumbBar}>
-              {breadcrumbs.map((crumb, idx) => (
-                <BreadcrumbNode 
-                  key={crumb.id} 
-                  crumb={crumb} 
-                  isLast={idx === breadcrumbs.length - 1} 
-                  navigateToFolder={navigateToFolder} 
-                />
-              ))}
+            <div 
+              ref={breadcrumbRef}
+              className="hide-scroll"
+              style={{
+                ...styles.breadcrumbBar,
+                overflowX: "auto",
+                scrollbarWidth: "none", // Hides scrollbar in Firefox
+                msOverflowStyle: "none", // Hides scrollbar in IE/Edge
+                cursor: dragRef.current?.isDown ? "grabbing" : "grab"
+              }}
+              onWheel={handleCrumbWheel}
+              onMouseDown={handleCrumbDown}
+              onMouseLeave={handleCrumbLeaveOrUp}
+              onMouseUp={handleCrumbLeaveOrUp}
+              onMouseMove={handleCrumbMove}
+            >
+              {/* Dynamically inject Webkit scrollbar hiding specifically for this div */}
+              <style>{`.hide-scroll::-webkit-scrollbar { display: none; }`}</style>
+              
+              <div style={{ display: "flex", width: "max-content", flexShrink: 0 }}>
+                {breadcrumbs.map((crumb, idx) => (
+                  <BreadcrumbNode 
+                    key={crumb.id} 
+                    crumb={crumb} 
+                    isLast={idx === breadcrumbs.length - 1} 
+                    navigateToFolder={navigateToFolder} 
+                  />
+                ))}
+              </div>
             </div>
           </div>
         </header>

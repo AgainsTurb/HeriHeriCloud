@@ -220,9 +220,26 @@ export default function Rent() {
     if (selectedNodes.size === 0) return;
     try {
       const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+      const isMobile = window.innerWidth < 768;
       let dir = "";
       
-      if (config.useDefaultDownloadPath && config.downloadPath) {
+      if (isMobile) {
+        const { downloadDir } = await import("@tauri-apps/api/path");
+        const { mkdir } = await import("@tauri-apps/plugin-fs");
+        let dDir = await downloadDir();
+        
+        if (dDir.includes("Android/data/")) {
+          dDir = dDir.split("Android/data/")[0] + "Download";
+        }
+        
+        dir = `${dDir.replace(/[/\\]$/, "")}/HeriHeriCloud`;
+        
+        try {
+          await mkdir(dir, { recursive: true });
+        } catch (e) {
+          // Silently ignore if folder already exists
+        }
+      } else if (config.useDefaultDownloadPath && config.downloadPath) {
         dir = config.downloadPath;
       } else {
         const selected = await open({ directory: true, title: "Select Download Folder" });
@@ -265,7 +282,13 @@ export default function Rent() {
 
       localStorage.setItem("heriheri_down_active", JSON.stringify(activeDown));
       window.dispatchEvent(new CustomEvent("DOWN_TASK_START"));
-      showAlert(t("Download Queued"), t("Added to Download Queue!"));
+      
+      if (isMobile) {
+        showAlert(t("Download Queued"), t(`Downloading to scoped app storage:\n${dir}\n\nCheck your File Manager's Android/data folder.`));
+      } else {
+        showAlert(t("Download Queued"), t("Added to Download Queue!"));
+      }
+      
       clearSelection();
     } catch(err) {
        showAlert(t("Download Error"), String(err));

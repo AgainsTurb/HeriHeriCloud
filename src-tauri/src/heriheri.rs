@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const ALLOWED_EXTS: &[&str] = &[
     "doc",
@@ -505,15 +505,20 @@ pub fn current_timestamp() -> u64 {
 
             // Calculate how far ahead or behind the hardware clock is
             Some(network_time - local_time)
-        }).join().unwrap_or(None);
+        })
+        .join()
+        .unwrap_or(None);
 
         if let Some(offset) = offset_result {
-            println!("[TIME-SYNC] Hardware clock offset established: {}ms", offset);
+            println!(
+                "[TIME-SYNC] Hardware clock offset established: {}ms",
+                offset
+            );
             TIME_OFFSET.store(offset, Ordering::Relaxed);
         } else {
             println!("[TIME-SYNC] Network unavailable. Proceeding with zero offset.");
         }
-        
+
         HAS_SYNCED_TIME.store(true, Ordering::Relaxed);
     }
 
@@ -524,7 +529,7 @@ pub fn current_timestamp() -> u64 {
         .as_millis() as i64;
 
     let offset = TIME_OFFSET.load(Ordering::Relaxed);
-    
+
     // Return the perfectly synchronized time
     (local_time + offset) as u64
 }

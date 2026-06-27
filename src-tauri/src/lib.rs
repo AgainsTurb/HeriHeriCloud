@@ -31,7 +31,9 @@ pub fn run() {
         current_phone: Arc::new(tokio::sync::Mutex::new(String::new())),
     };
 
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_fs::init());
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_keep_screen_on::init())
+        .plugin(tauri_plugin_fs::init());
 
     #[cfg(mobile)]
     {
