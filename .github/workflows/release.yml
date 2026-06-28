@@ -162,6 +162,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
         run: |
+          shopt -s globstar
           gh release upload ${{ github.ref_name }} src-tauri/gen/android/app/build/outputs/apk/**/*.apk
 
   # --- PHASE 4: AUTOMATICALLY PUBLISH THE RELEASE ---
