@@ -158,12 +158,13 @@ jobs:
           npm run tauri android build -- --apk
 
       - name: Upload APK to Release
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
         run: |
-          shopt -s globstar
-          gh release upload ${{ github.ref_name }} src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          tag_name: ${{ github.ref_name }}
+          files: 'src-tauri/gen/android/app/build/outputs/apk/**/*.apk'
 
   # --- PHASE 4: AUTOMATICALLY PUBLISH THE RELEASE ---
   finalize-release:
