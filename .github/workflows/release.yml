@@ -6,7 +6,52 @@ on:
       - 'v*'
 
 jobs:
+  # --- PHASE 1: CREATE THE UNIFIED RELEASE DRAFT ---
+  create-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    outputs:
+      changelog_body: ${{ steps.changelog.outputs.body }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract changelog for current version
+        id: changelog
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BODY=$(awk -v ver="$VERSION" '
+            BEGIN { found=0 }
+            /^## \[/ {
+              if (index($0, "[" ver "]")) { found=1; print; next }
+              else if (found) exit
+            }
+            found { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$BODY" ]; then
+            BODY="No changelog found for version ${VERSION}."
+          fi
+
+          # Fix multiline output escaping for modern GitHub Actions
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Initialize GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "HeriHeri v${GITHUB_REF_NAME#v}" \
+            --notes "${{ steps.changelog.outputs.body }}" \
+            --draft=true
+
+  # --- PHASE 2: COMPILE DESKTOP TARGETS (RUNS IN PARALLEL) ---
   publish-tauri:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -57,43 +102,75 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Extract changelog for current version
-        id: changelog
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-
-          # Extract everything from "## [VERSION]" up to the next "## " or EOF.
-          BODY=$(awk -v ver="$VERSION" '
-            BEGIN { found=0 }
-            /^## \[/ {
-              if (index($0, "[" ver "]")) { found=1; print; next }
-              else if (found) exit
-            }
-            found { print }
-          ' CHANGELOG.md)
-
-          if [ -z "$BODY" ]; then
-            BODY="No changelog found for version ${VERSION}."
-          fi
-
-          # Pass the multiline body to the next step
-          {
-            echo "body<<EOF"
-            echo "$BODY"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
-
-      - name: Build Tauri Application & Create Release
+      - name: Build Tauri Application & Inject Assets
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
-          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "HeriHeri v__VERSION__"
-          releaseBody: ${{ steps.changelog.outputs.body }}
-          releaseDraft: false
+          # By setting this to true, it will seamlessly inject bundles into the pre-existing draft
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  # --- PHASE 3: COMPILE MOBILE TARGETS (RUNS IN PARALLEL) ---
+  publish-android:
+    needs: create-release
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Java for Android
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Install Rust stable with Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build Android APK
+        run: |
+          export NDK_HOME=$ANDROID_NDK_HOME
+          npm run tauri android build -- --apk
+
+      - name: Upload APK to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
+        run: |
+          gh release upload ${{ github.ref_name }} src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+
+  # --- PHASE 4: AUTOMATICALLY PUBLISH THE RELEASE ---
+  finalize-release:
+    needs: [publish-tauri, publish-android]
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Publish Release Draft
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit ${{ github.ref_name }} --draft=false
