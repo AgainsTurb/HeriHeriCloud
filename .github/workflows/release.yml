@@ -110,7 +110,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "HeriHeri v__VERSION__"
-          # By setting this to true, it will seamlessly inject bundles into the pre-existing draft
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
