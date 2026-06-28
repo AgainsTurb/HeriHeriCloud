@@ -168,13 +168,22 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      - name: Setup Android Code Signing Assets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          cd src-tauri/gen/android
+          
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > herihericloud-key.jks
+          
+          echo "keyAlias=herihericloud" > keystore.properties
+          echo "password=$ANDROID_KEYSTORE_PASSWORD" >> keystore.properties
+          echo "storeFile=../herihericloud-key.jks" >> keystore.properties
+
       - name: Build Android APK
         env:
             HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
-            TAURI_ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-            TAURI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-            TAURI_ANDROID_KEY_ALIAS: "herihericloud"
-            TAURI_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           export NDK_HOME=$ANDROID_NDK_HOME
           npm run tauri android build -- --apk
