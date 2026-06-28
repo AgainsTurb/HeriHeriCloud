@@ -114,6 +114,25 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+      - name: GPG Sign Linux Packages
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GPG_PRIVATE_KEY_BASE64: ${{ secrets.GPG_PRIVATE_KEY_BASE64 }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GPG_PRIVATE_KEY_BASE64" | base64 --decode > private.key
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --import private.key
+
+          shopt -s nullglob
+          for file in src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/appimage/*.AppImage; do
+            if [ -f "$file" ]; then
+              echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --pinentry-mode loopback --detach-sign --armor "$file"
+              
+              gh release upload ${{ github.ref_name }} "$file.asc"
+            fi
+          done
+
   # --- PHASE 3: COMPILE MOBILE TARGETS (RUNS IN PARALLEL) ---
   publish-android:
     needs: create-release
@@ -152,6 +171,10 @@ jobs:
       - name: Build Android APK
         env:
             HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
+            TAURI_ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+            TAURI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+            TAURI_ANDROID_KEY_ALIAS: "herihericloud"
+            TAURI_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           export NDK_HOME=$ANDROID_NDK_HOME
           npm run tauri android build -- --apk
@@ -176,4 +199,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release edit ${{ github.ref_name }} --draft=false
+          gh release edit ${{ github.ref_name }} --repo ${{ github.repository }} --draft=false
