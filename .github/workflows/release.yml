@@ -151,6 +151,8 @@ jobs:
         run: npm install
 
       - name: Build Android APK
+        env:
+            HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
         run: |
           export NDK_HOME=$ANDROID_NDK_HOME
           npm run tauri android build -- --apk
