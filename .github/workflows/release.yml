@@ -161,7 +161,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
-        run: |
+        with:
           tag_name: ${{ github.ref_name }}
           files: 'src-tauri/gen/android/app/build/outputs/apk/**/*.apk'
 
