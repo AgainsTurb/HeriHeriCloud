@@ -32,10 +32,42 @@ function RentRowNode({ node, index, isSelected, handleRowClick, handleContextMen
     alignItems: "center"
   };
 
+  const touchTimerRef = useRef<any>(null);
+  const isLongPressTriggered = useRef(false);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    isLongPressTriggered.current = false;
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+    
+    const touch = e.touches[0];
+    const syntheticEvent = {
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      preventDefault: () => {},
+      stopPropagation: () => {}
+    };
+    
+    touchTimerRef.current = setTimeout(() => {
+      isLongPressTriggered.current = true;
+      if (!isSelected) setSelectedNodes(new Set([node.id]));
+      handleContextMenu(syntheticEvent as any, node.id);
+    }, 500);
+  };
+
+  const cancelTouch = () => {
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+  };
+
   return (
     <div 
       style={{...styles.listRow, ...dynamicGridStyle, backgroundColor: isSelected ? "#e5e7eb" : "transparent"}}
+      onTouchStart={handleTouchStart}
+      onTouchMove={cancelTouch}
+      onTouchEnd={cancelTouch}
+      onTouchCancel={cancelTouch}
       onClick={(e) => {
+        if (isLongPressTriggered.current) return;
+        
         if (isMobileView) {
           e.stopPropagation();
           const next = new Set(selectedNodes);
