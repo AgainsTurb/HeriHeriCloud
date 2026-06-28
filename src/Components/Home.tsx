@@ -50,9 +50,36 @@ function FileRowNode({ node, index, isSelected, isCut, formatTime, formatBytes, 
   };
 
   const clickTimeoutRef = useRef<any>(null);
+  const touchTimerRef = useRef<any>(null);
+  const isLongPressTriggered = useRef(false);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    isLongPressTriggered.current = false;
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+    
+    const touch = e.touches[0];
+    const syntheticEvent = {
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      preventDefault: () => {},
+      stopPropagation: () => {}
+    };
+    
+    touchTimerRef.current = setTimeout(() => {
+      isLongPressTriggered.current = true;
+      if (!isSelected) setSelectedNodes(new Set([node.id]));
+      handleContextMenu(syntheticEvent as any, node.id);
+    }, 500);
+  };
+
+  const cancelTouch = () => {
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+  };
 
   const handleMobileTap = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (isLongPressTriggered.current) return;
+
     if (clickTimeoutRef.current) {
       // Double tap detected! Clear timer and open.
       clearTimeout(clickTimeoutRef.current);
@@ -79,6 +106,10 @@ function FileRowNode({ node, index, isSelected, isCut, formatTime, formatBytes, 
       {...attributes}
       {...listeners}
       className="file-row"
+      onTouchStart={handleTouchStart}
+      onTouchMove={cancelTouch}
+      onTouchEnd={cancelTouch}
+      onTouchCancel={cancelTouch}
       onClick={(e) => {
         if (isMobileView) {
           handleMobileTap(e);
@@ -163,6 +194,34 @@ export default function Home({ status }: { status: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const breadcrumbRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef({ isDown: false, startX: 0, scrollLeft: 0 });
+
+  const emptyTouchTimerRef = useRef<any>(null);
+  const isEmptyLongPress = useRef(false);
+
+  const handleEmptyTouchStart = (e: React.TouchEvent) => {
+    // If the user touched a file row, ignore it! The file row handles its own long-press.
+    if ((e.target as HTMLElement).closest('.file-row')) return;
+
+    isEmptyLongPress.current = false;
+    if (emptyTouchTimerRef.current) clearTimeout(emptyTouchTimerRef.current);
+    
+    const touch = e.touches[0];
+    const syntheticEvent = {
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      preventDefault: () => {},
+      stopPropagation: () => {}
+    };
+    
+    emptyTouchTimerRef.current = setTimeout(() => {
+      isEmptyLongPress.current = true;
+      handleContextMenu(syntheticEvent as any, null);
+    }, 500);
+  };
+
+  const cancelEmptyTouch = () => {
+    if (emptyTouchTimerRef.current) clearTimeout(emptyTouchTimerRef.current);
+  };
 
   const handleCrumbWheel = (e: React.WheelEvent) => {
     if (breadcrumbRef.current) breadcrumbRef.current.scrollLeft += e.deltaY;
@@ -712,7 +771,10 @@ export default function Home({ status }: { status: string }) {
           position: "relative",
           paddingTop: "calc(env(safe-area-inset-top, 0px) + 0px)"
         }} 
-        onClick={clearSelection} 
+        onClick={() => {
+          if (isEmptyLongPress.current) return;
+          clearSelection();
+        }}
         onContextMenu={(e) => handleContextMenu(e, null)}
       >
         <header style={styles.header}>
@@ -784,7 +846,14 @@ export default function Home({ status }: { status: string }) {
           </div>
         </header>
 
-        <div style={styles.listContainer} ref={containerRef}>
+        <div 
+          style={styles.listContainer} 
+          ref={containerRef}
+          onTouchStart={handleEmptyTouchStart}
+          onTouchMove={cancelEmptyTouch}
+          onTouchEnd={cancelEmptyTouch}
+          onTouchCancel={cancelEmptyTouch}
+        >
           <div style={{ ...styles.listHeaderRow, ...dynamicGridStyle }}>
             <div style={styles.cellName}>{t("Name")}</div>
             <div style={styles.cellDefault}>{t("Size")}</div>
@@ -1022,11 +1091,14 @@ export default function Home({ status }: { status: string }) {
                   let dir = "";
 
                   if (isMobile) {
-                    const { downloadDir } = await import("@tauri-apps/api/path");
+                    const { downloadDir, documentDir } = await import("@tauri-apps/api/path");
                     const { mkdir } = await import("@tauri-apps/plugin-fs");
+                    
                     let dDir = await downloadDir();
                     
-                    if (dDir.includes("Android/data/")) {
+                    if (dDir.includes("Containers/Data/Application") || dDir.includes("CoreSimulator")) {
+                      dDir = await documentDir(); 
+                    } else if (dDir.includes("Android/data/")) {
                       dDir = dDir.split("Android/data/")[0] + "Download";
                     }
                     
@@ -1097,7 +1169,19 @@ export default function Home({ status }: { status: string }) {
                   localStorage.setItem("heriheri_down_active", JSON.stringify(activeDown));
                   window.dispatchEvent(new CustomEvent("DOWN_TASK_START"));
                   if (isMobile) {
-                    showAlert(t("Download Queued"), t(`Downloading to scoped app storage:\n${dir}\n\nCheck your File Manager's Android/data folder.`));
+                    const isIOS = dir.includes("Containers/Data/Application");
+                    
+                    if (isIOS) {
+                      showAlert(
+                        t("Download Queued"), 
+                        t("Downloading to app documents folder.\n\nOpen Apple's 'Files' app and look under 'On My iPhone' -> 'HeriHeri' to find your items.")
+                      );
+                    } else {
+                      showAlert(
+                        t("Download Queued"), 
+                        t(`Downloading to scoped app storage:\n${dir}\n\nCheck your File Manager's Android/data folder.`)
+                      );
+                    }
                   } else {
                     showAlert(t("Download Queued"), t("Items added to the queue."));
                   }
@@ -1166,10 +1250,10 @@ const styles: { [key: string]: React.CSSProperties } = {
   headerActions: { display: "flex", gap: "12px", alignItems: "center" },
   breadcrumbBar: { display: "flex", alignItems: "center", fontSize: "12px", color: "#111827", backgroundColor: "#f3f4f6", padding: "8px 12px", borderRadius: "0", border: "1px solid #111827", fontWeight: "600" },
   breadcrumbLink: { cursor: "pointer", color: "#111827", textDecoration: "underline" },
-  listContainer: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", position: "relative", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)", userSelect: "none" },
+  listContainer: { backgroundColor: "#ffffff", borderRadius: "0", border: "1px solid #111827", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", position: "relative", boxShadow: "4px 4px 0px 0px rgba(17, 24, 39, 1)", userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" },
   listHeaderRow: { padding: "12px 16px", backgroundColor: "#f3f4f6", borderBottom: "1px solid #111827", fontWeight: "700", color: "#111827", fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" },
   listBody: { overflowY: "auto", flex: 1 },
-  listRow: { padding: "10px 16px", borderBottom: "1px solid #e5e7eb", cursor: "pointer", transition: "background-color 0.1s, opacity 0.2s", userSelect: "none" },
+  listRow: { padding: "10px 16px", borderBottom: "1px solid #e5e7eb", cursor: "pointer", transition: "background-color 0.1s, opacity 0.2s", userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" },
   cellName: { display: "flex", alignItems: "center", gap: "12px", overflow: "hidden" },
   cellDefault: { fontSize: "13px", color: "#4b5563", whiteSpace: "nowrap" },
   cellActions: { display: "flex", gap: "8px", justifyContent: "flex-end" },
