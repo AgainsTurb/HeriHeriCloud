@@ -17,6 +17,7 @@ HeriHeriCloud 是一个跨平台的云盘客户端解决方案。本项目以蓝
 * **自定义虚拟文件系统 (VFS)**：突破底层云盘的目录层级和文件类型限制，在本地构建并维护完整的树状目录结构。
 * **高级媒体与文档预览**：内置视频流媒体实时缓冲代理，并支持文本、代码、图片及 PDF 文档的原生窗口预览。
 * **极速并发传输**：支持自定义并发数与速度限制，充分利用带宽上限，实现大文件的上传下载以及断点续传。
+* **存储可靠**：账户注册与登录完全使用蓝奏云盘账户，不存在第三方泄露。同时后端存储直接为用户自己的蓝奏云盘，不存在文件丢失之类的情况。
 
 ## 构建与运行
 
@@ -202,6 +203,7 @@ Currently, no cloud storage service on the market offers truly unlimited speed a
 * **Virtual File System (VFS)**: Overcomes the directory depth and file type restrictions of the underlying cloud drive by building and maintaining a complete, local tree-based directory structure.
 * **Advanced Media & Document Preview**: Includes a real-time buffering proxy for video streaming, along with native window previewers for text, code, images, and PDF documents.
 * **High-Speed Concurrent Transfers**: Supports custom concurrency limits and speed throttling, fully utilizing bandwidth capacity for large file chunk uploads, downloads and resumable transfer.
+* **Reliable Storage**: Account registration and login rely entirely on Lanzou Cloud accounts, eliminating the risk of third-party data leaks. Furthermore, since data is stored directly in the user's own Lanzou Cloud account, there is no risk of file loss.
 
 ## Build and Run
 
