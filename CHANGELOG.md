@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1] – 2026-06-30
+
+### 新增
+- 无。
+
+### 变更
+- 无。
+
+### 修复
+- 修复大文件上传可能出现的卡停问题。
+
+### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- Fixed an issue where large file uploads might stall.
+
+---
+
+
+---
+
 ## [1.0.0] – 2026-06-28
 
 ### 新增
