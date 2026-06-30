@@ -748,7 +748,7 @@ impl LanzouCloud {
 
     pub async fn upload_file_direct(
         &self,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
         safe_name: String,
         target_folder: String,
         app: tauri::AppHandle,
@@ -1422,7 +1422,7 @@ pub async fn vfs_upload_file(
         let s = t.to_string();
         let h = md5::compute(&b);
         let m = format!("{:x}", h);
-        Ok::<_, String>((b, m, t, s))
+        Ok::<_, String>((bytes::Bytes::from(b), m, t, s))
     })
     .await
     .unwrap()?;
@@ -1535,7 +1535,7 @@ pub async fn vfs_upload_file(
             let start = i * chunk_limit;
             let end = std::cmp::min(start + chunk_limit, total_size);
 
-            let chunk_bytes = bytes[start..end].to_vec();
+            let chunk_bytes = bytes.slice(start..end);
             let chunk_name = format!("{}_part{}.iso", md5_str, i + 1);
 
             let upload_res = lanzou_clone
@@ -1562,6 +1562,7 @@ pub async fn vfs_upload_file(
                 }
                 return Err(e);
             }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             current_loaded += end - start;
         }
     }
@@ -2615,7 +2616,7 @@ pub async fn vfs_sync_push(
     };
 
     let sync_folder_id = get_sync_folder_id(&lanzou).await?;
-    let tsv_bytes = tsv_content.into_bytes();
+    let tsv_bytes = bytes::Bytes::from(tsv_content.into_bytes());
     let total_size = tsv_bytes.len();
     let phone = state.current_phone.lock().await.clone();
     let file_prefix = if phone.is_empty() {
