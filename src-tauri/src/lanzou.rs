@@ -757,6 +757,7 @@ impl LanzouCloud {
         total_file_size: usize,
         task_flag: Arc<AtomicU8>,
         upload_limit: Arc<std::sync::atomic::AtomicU32>,
+        file_index: usize,
     ) -> Result<String, String> {
         let mime = mime_guess::from_path(&safe_name)
             .first_or_octet_stream()
@@ -776,11 +777,11 @@ impl LanzouCloud {
 
             while offset < total_bytes {
                 let state = task_flag.load(Ordering::SeqCst);
-                if state == 1 { yield Err::<Vec<u8>, std::io::Error>(std::io::Error::new(std::io::ErrorKind::Interrupted, "PAUSED")); break; }
-                if state == 2 { yield Err::<Vec<u8>, std::io::Error>(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "CANCELLED")); break; }
+                if state == 1 { yield Err::<bytes::Bytes, std::io::Error>(std::io::Error::new(std::io::ErrorKind::Interrupted, "PAUSED")); break; }
+                if state == 2 { yield Err::<bytes::Bytes, std::io::Error>(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "CANCELLED")); break; }
 
                 let end = std::cmp::min(offset + chunk_size, total_bytes);
-                let chunk = bytes[offset..end].to_vec();
+                let chunk = bytes.slice(offset..end);
 
                 let limit_kb = upload_limit.load(Ordering::Relaxed);
                 if limit_kb > 0 {
@@ -801,8 +802,7 @@ impl LanzouCloud {
                     total: total_file_size,
                 });
 
-                // MINIMUM FIX: Explicitly typed Ok without the ambiguous .into()
-                yield Ok::<Vec<u8>, std::io::Error>(chunk);
+                yield Ok::<bytes::Bytes, std::io::Error>(chunk);
             }
         };
 
@@ -813,13 +813,17 @@ impl LanzouCloud {
             .mime_str(&mime)
             .unwrap();
 
+        let wu_id = format!("WU_FILE_{}", file_index);
+
         let form = multipart::Form::new()
             .text("task", "1")
             .text("vie", "2")
             .text("ve", "2")
-            .text("id", "WU_FILE_0")
+            .text("id", wu_id)
             .text("folder_id_bb_n", parent_id)
             .text("name", safe_name)
+            .text("type", mime.clone())
+            .text("size", total_bytes.to_string())
             .part("upload_file", part);
 
         let url = format!("{}/html5up.php", BASE_URL);
@@ -827,6 +831,9 @@ impl LanzouCloud {
             .client
             .post(&url)
             .header("X-Requested-With", "XMLHttpRequest")
+            .header("Origin", "https://up.woozooo.com")
+            .header("Referer", "https://up.woozooo.com/mydisk.php")
+            .header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8")
             .multipart(form)
             .send()
             .await
@@ -1502,6 +1509,7 @@ pub async fn vfs_upload_file(
                 total_size,
                 task_flag.clone(),
                 state.upload_limit.clone(),
+                0,
             )
             .await;
 
@@ -1549,6 +1557,7 @@ pub async fn vfs_upload_file(
                     total_size,
                     task_flag.clone(),
                     state.upload_limit.clone(),
+                    i,
                 )
                 .await;
 
@@ -1562,7 +1571,7 @@ pub async fn vfs_upload_file(
                 }
                 return Err(e);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             current_loaded += end - start;
         }
     }
@@ -2640,6 +2649,7 @@ pub async fn vfs_sync_push(
             total_size,
             dummy_flag,
             std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            0,
         )
         .await;
 
