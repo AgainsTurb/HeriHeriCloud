@@ -46,8 +46,9 @@ npm install
 ```toml
 [env]
 HERIHERI_SECRET_KEY = "dummy_secret_key"
+CHUNKS_NAMES_KEY = "dummy_secret_key"
 ```
-注意，自行创建的测试密钥会影响文件分享码的识别，其余功能均与Release页面的版本一致。
+注意，自行创建的测试密钥仅限本地测试功能，与Release版本不兼容。
 
 4. 启动开发环境：
 - Windows, macOS, Linus
@@ -106,7 +107,7 @@ cd 仓库名
 
 4.  添加原始仓库为 upstream 远程仓库，以便同步更新：  
 ```bash
-git remote add upstream https://github.com/原始作者/仓库名.git
+git remote add upstream https://github.com/AgainsTurb/HeriHeriCloud.git
 ```
 
 ### 创建分支
@@ -157,7 +158,7 @@ git push origin feature/你的功能名称
 
 如果你是维护者，需要发布新版本：
 
--   在完成改动后，暂存并提交： 
+-   在完成改动后，暂存并提交（不要忘记修改 CHANGELOG.md）： 
 ```bash 
 git add .
 git commit -m "Fix errors"
@@ -166,6 +167,7 @@ git commit -m "Fix errors"
 -   使用 npm 更新版本号：  
 ```bash
 npm version x.x.x
+(npm version patch) (npm version minor) (npm version major)
 ```
 此命令会自动更新 `package.json`、创建版本提交和对应的标签。
     
@@ -232,8 +234,9 @@ Create or edit `.cargo/config.toml` and add the following:
 ```toml
 [env]
 HERIHERI_SECRET_KEY = "dummy_secret_key"
+CHUNKS_NAMES_KEY = "dummy_secret_key"
 ```
-Notice, the dummy key only affects the parsing of share code, other functionalities of the program remain the same as those from Release.
+Note that self-generated test keys are intended solely for local testing and are incompatible with the release version.
 
 4. Run the development environment:
 - Windows, macOS, Linus
@@ -292,7 +295,7 @@ cd REPOSITORY-NAME
 
 4.  Add the original repository as an upstream remote to keep your fork in sync:  
 ```bash
-git remote add upstream https://github.com/ORIGINAL-OWNER/REPOSITORY-NAME.git
+git remote add upstream https://github.com/AgainsTurb/HeriHeriCloud.git
 ```
 
 ### Create a Branch
@@ -343,14 +346,15 @@ git push origin feature/my-awesome-feature
 
 If you are a maintainer creating a new release:
 
--   After finalising your changes, stage and commit them:  
+-   After finalising your changes, stage and commit them (Do not forget to update CHANGELOG.md):  
 ```bash
 git add .
 git commit -m "Fix errors"
 ```
 -  Bump the version using npm:  
 ```bash
-npm version x.x.x
+npm version vx.x.x
+(npm version patch) (npm version minor) (npm version major)
 ```
 This updates `package.json` and creates a version commit and tag automatically.
 

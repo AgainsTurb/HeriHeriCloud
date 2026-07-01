@@ -6,6 +6,10 @@ use axum::{
     routing::get,
     Router,
 };
+use chacha20poly1305::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    ChaCha20Poly1305, Key, Nonce,
+};
 use futures_util::stream::BoxStream;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -65,6 +69,59 @@ pub fn get_config() -> Arc<tokio::sync::Mutex<WebdavConfig>> {
             }))
         })
         .clone()
+}
+
+fn get_filename_cipher() -> ChaCha20Poly1305 {
+    // Attempt to load CHUNKS_NAMES_KEY; fallback to the main secret key if missing
+    let secret = std::env::var("CHUNKS_NAMES_KEY")
+        .unwrap_or_else(|_| env!("HERIHERI_SECRET_KEY").to_string());
+
+    let mut key_bytes = [0u8; 32];
+    let bytes = secret.as_bytes();
+    let len = std::cmp::min(bytes.len(), 32);
+    key_bytes[..len].copy_from_slice(&bytes[..len]);
+
+    let key = Key::from_slice(&key_bytes);
+    ChaCha20Poly1305::new(key)
+}
+
+/// Encrypts the payload into an un-analyzable 36-character string matching Lanzou constraints
+pub fn encrypt_chunk_filename(md5_str: &str, chunk_index: u32) -> String {
+    let cipher = get_filename_cipher();
+    
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+
+    let plaintext = format!("{}{:04x}", md5_str, chunk_index);
+    let ciphertext = cipher.encrypt(&nonce, plaintext.as_bytes()).expect("Crypto Fail");
+
+    let mut payload = nonce.to_vec();
+    payload.extend_from_slice(&ciphertext);
+
+    hex::encode(payload)
+}
+
+/// Attempts to parse and decrypt a filename. Returns Some(index) if it matches our scheme.
+pub fn decrypt_chunk_filename(filename: &str) -> Option<u32> {
+    let base_name = filename.strip_suffix(".zip").unwrap_or(filename);
+    let decoded = hex::decode(base_name).ok()?;
+
+    if decoded.len() < 12 {
+        return None;
+    }
+
+    let (nonce_bytes, ciphertext) = decoded.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let cipher = get_filename_cipher();
+
+    let plaintext_bytes = cipher.decrypt(nonce, ciphertext).ok()?;
+    let plaintext = String::from_utf8(plaintext_bytes).ok()?;
+
+    if plaintext.len() >= 4 {
+        let hex_idx = &plaintext[plaintext.len() - 4..];
+        return u32::from_str_radix(hex_idx, 16).ok();
+    }
+
+    None
 }
 
 // ========================================================
@@ -512,19 +569,23 @@ async fn handle_stream(
 
                 let re_legacy = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
                 let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
-
+                
                 all_files.sort_by(|a, b| {
                     let na = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let nb = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
 
-                    let get_idx = |name: &str| -> u32 {
-                        // Check legacy format
-                        if let Some(caps) = re_legacy.captures(name) {
-                            return caps[1].parse::<u32>().unwrap_or(0);
+                    let mut get_idx = |name: &str| -> u32 {
+                        // 1. Try to decrypt using the new cryptographic covert layout
+                        if let Some(idx) = decrypt_chunk_filename(name) {
+                            return idx;
                         }
-                        // Check new covert hex format
+                        // 2. Fallback to plaintext hex append pattern
                         if let Some(caps) = re_covert.captures(name) {
                             return u32::from_str_radix(&caps[1], 16).unwrap_or(0);
+                        }
+                        // 3. Fallback to old legacy part designator pattern
+                        if let Some(caps) = re_legacy.captures(name) {
+                            return caps[1].parse::<u32>().unwrap_or(0);
                         }
                         0
                     };
@@ -703,19 +764,23 @@ async fn handle_stream(
 
                             let re_legacy = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
                             let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
-
+                            
                             all_files.sort_by(|a, b| {
                                 let na = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
                                 let nb = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
 
-                                let get_idx = |name: &str| -> u32 {
-                                    // Check legacy format
-                                    if let Some(caps) = re_legacy.captures(name) {
-                                        return caps[1].parse::<u32>().unwrap_or(0);
+                                let mut get_idx = |name: &str| -> u32 {
+                                    // 1. Try to decrypt using the new cryptographic covert layout
+                                    if let Some(idx) = decrypt_chunk_filename(name) {
+                                        return idx;
                                     }
-                                    // Check new covert hex format
+                                    // 2. Fallback to plaintext hex append pattern
                                     if let Some(caps) = re_covert.captures(name) {
                                         return u32::from_str_radix(&caps[1], 16).unwrap_or(0);
+                                    }
+                                    // 3. Fallback to old legacy part designator pattern
+                                    if let Some(caps) = re_legacy.captures(name) {
+                                        return caps[1].parse::<u32>().unwrap_or(0);
                                     }
                                     0
                                 };

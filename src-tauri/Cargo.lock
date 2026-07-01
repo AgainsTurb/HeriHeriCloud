@@ -1763,6 +1763,7 @@ dependencies = [
  "dav-server",
  "futures",
  "futures-util",
+ "hex",
  "md5",
  "mime_guess",
  "obfstr",
