@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+---
+
+## [1.0.2] – 2026-07-01
+
+### 新增
+- 无。
+
+### 变更
+- 变更大文件的分片名。
+
+### 修复
+- 无。
+
+### Added
+- None.
+
+### Changed
+- Change the chunk names for large files.
+
+### Fixed
+- None.
+
+---
+
 
 ---
 

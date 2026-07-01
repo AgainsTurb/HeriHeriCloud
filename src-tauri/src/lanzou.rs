@@ -1544,7 +1544,7 @@ pub async fn vfs_upload_file(
             let end = std::cmp::min(start + chunk_limit, total_size);
 
             let chunk_bytes = bytes.slice(start..end);
-            let chunk_name = format!("{}_part{}.iso", md5_str, i + 1);
+            let chunk_name = format!("{}{:04x}.zip", md5_str, i + 1);
 
             let upload_res = lanzou_clone
                 .upload_file_direct(
@@ -2369,19 +2369,25 @@ pub async fn vfs_download_file(
             .get_lanzou_folder_links(&share_url, file_pwd.as_deref(), 5)
             .await?;
 
-        let re_part = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
+        let re_legacy = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
+        let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
         all_files.sort_by(|a, b| {
             let na = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let nb = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let num_a = re_part
-                .captures(na)
-                .and_then(|c| c[1].parse::<u32>().ok())
-                .unwrap_or(0);
-            let num_b = re_part
-                .captures(nb)
-                .and_then(|c| c[1].parse::<u32>().ok())
-                .unwrap_or(0);
-            num_a.cmp(&num_b)
+
+            let get_idx = |name: &str| -> u32 {
+                // Check legacy format first
+                if let Some(caps) = re_legacy.captures(name) {
+                    return caps[1].parse::<u32>().unwrap_or(0);
+                }
+                // Check new covert format
+                if let Some(caps) = re_covert.captures(name) {
+                    return u32::from_str_radix(&caps[1], 16).unwrap_or(0);
+                }
+                0
+            };
+
+            get_idx(na).cmp(&get_idx(nb))
         });
 
         let chunk_size = 100 * 1024 * 1024; // 100MB EXACT

@@ -510,19 +510,26 @@ async fn handle_stream(
                     }
                 };
 
-                let re_part = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
+                let re_legacy = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
+                let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
+
                 all_files.sort_by(|a, b| {
                     let na = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let nb = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let num_a = re_part
-                        .captures(na)
-                        .and_then(|c| c[1].parse::<u32>().ok())
-                        .unwrap_or(0);
-                    let num_b = re_part
-                        .captures(nb)
-                        .and_then(|c| c[1].parse::<u32>().ok())
-                        .unwrap_or(0);
-                    num_a.cmp(&num_b)
+
+                    let get_idx = |name: &str| -> u32 {
+                        // Check legacy format
+                        if let Some(caps) = re_legacy.captures(name) {
+                            return caps[1].parse::<u32>().unwrap_or(0);
+                        }
+                        // Check new covert hex format
+                        if let Some(caps) = re_covert.captures(name) {
+                            return u32::from_str_radix(&caps[1], 16).unwrap_or(0);
+                        }
+                        0
+                    };
+
+                    get_idx(na).cmp(&get_idx(nb))
                 });
 
                 for file in all_files {
@@ -694,13 +701,26 @@ async fn handle_stream(
                             let mut all_files = downloader.get_lanzou_folder_links(&new_share_url, new_file_pwd.as_deref(), 5)
                                 .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-                            let re_part = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
+                            let re_legacy = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
+                            let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
+
                             all_files.sort_by(|a, b| {
                                 let na = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
                                 let nb = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                                let num_a = re_part.captures(na).and_then(|c| c[1].parse::<u32>().ok()).unwrap_or(0);
-                                let num_b = re_part.captures(nb).and_then(|c| c[1].parse::<u32>().ok()).unwrap_or(0);
-                                num_a.cmp(&num_b)
+
+                                let get_idx = |name: &str| -> u32 {
+                                    // Check legacy format
+                                    if let Some(caps) = re_legacy.captures(name) {
+                                        return caps[1].parse::<u32>().unwrap_or(0);
+                                    }
+                                    // Check new covert hex format
+                                    if let Some(caps) = re_covert.captures(name) {
+                                        return u32::from_str_radix(&caps[1], 16).unwrap_or(0);
+                                    }
+                                    0
+                                };
+
+                                get_idx(na).cmp(&get_idx(nb))
                             });
 
                             let mut new_urls = Vec::new();
