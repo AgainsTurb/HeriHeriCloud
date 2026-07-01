@@ -107,6 +107,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
+          CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "HeriHeri v__VERSION__"
@@ -184,6 +185,7 @@ jobs:
       - name: Build Android APK
         env:
             HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
+            CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
         run: |
           export NDK_HOME=$ANDROID_NDK_HOME
           npm run tauri android build -- --apk
@@ -193,6 +195,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
+          CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
         with:
           tag_name: ${{ github.ref_name }}
           files: 'src-tauri/gen/android/app/build/outputs/apk/**/*.apk'
