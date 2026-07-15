@@ -233,24 +233,23 @@ jobs:
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
           CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
         run: |
-          mkdir -p /tmp/xcode-bypass
-          cat << 'EOF' > /tmp/xcode-bypass/xcodebuild
-          
-          exec /usr/bin/xcodebuild "$@" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGNING_IDENTITY=""
-          EOF
-          chmod +x /tmp/xcode-bypass/xcodebuild
-          export PATH="/tmp/xcode-bypass:$PATH"
+          echo "CODE_SIGNING_ALLOWED = NO" > /tmp/bypass.xcconfig
+          echo "CODE_SIGNING_REQUIRED = NO" >> /tmp/bypass.xcconfig
+          echo "CODE_SIGNING_IDENTITY = " >> /tmp/bypass.xcconfig
+          echo "EXPANDED_CODE_SIGN_IDENTITY = " >> /tmp/bypass.xcconfig
+          export XCODE_XCCONFIG_FILE="/tmp/bypass.xcconfig"
 
+          # We use || true because Tauri's final step tries to generate an Apple-signed Archive and will fail, 
+          # but we don't care because the raw Unsigned .app is already successfully built by that point!
           npm run tauri ios build || true
 
           APP_PATH=$(find src-tauri/gen/apple -type d -name "*.app" | grep -v "iphonesimulator" | head -n 1)
           if [ -z "$APP_PATH" ]; then
-            # Fallback search if it was pushed to Xcode's default DerivedData folder
             APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -type d -name "*.app" | grep -v "iphonesimulator" | head -n 1)
           fi
 
           if [ -z "$APP_PATH" ]; then
-            echo "Failed to find the compiled .app file. The build likely failed."
+            echo "Failed to find the compiled .app file. The build failed."
             exit 1
           fi
           
