@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compile the iOS installation package for users to sign themselves.
 
 ### Changed
-- The VFS is being upgraded to version 2, utilizing Base64 encoding for filenames to prevent conflicts involving the "|" character. Additionally, all existing local files still on version 1 will be upgraded to version 2, ensuring that filenames previously prone to misidentification are correctly recognized as upgraded.
+- The VFS is being upgraded to version 2, utilizing Base64 encoding for filenames to prevent conflicts involving the | character. Additionally, all existing local files still on version 1 will be upgraded to version 2, ensuring that filenames previously prone to misidentification are correctly recognized as upgraded.
 
 ### Fixed
 - None.
