@@ -202,7 +202,7 @@ jobs:
 
   # --- PHASE 4: AUTOMATICALLY PUBLISH THE RELEASE ---
   finalize-release:
-    needs: [publish-tauri, publish-android, publish-ios]
+    needs: [publish-tauri, publish-android]
     permissions:
       contents: write
     runs-on: ubuntu-22.04
