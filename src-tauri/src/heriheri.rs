@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 const ALLOWED_EXTS: &[&str] = &[
     "doc",
@@ -166,9 +167,10 @@ impl VfsTree {
 
         let header = lines.next().ok_or("Empty tree file")?;
         let h_parts: Vec<&str> = header.split('|').collect();
-        if h_parts.len() < 4 || h_parts[0] != "V1" {
+        if h_parts.len() < 4 || (h_parts[0] != "V1" && h_parts[0] != "V2") {
             return Err("Invalid or unsupported tree file version".to_string());
         }
+        let is_v2 = h_parts[0] == "V2";
 
         let last_modified = h_parts[1].parse::<u64>().unwrap_or(0);
         let root_lanzou_id = h_parts[3].to_string();
@@ -188,20 +190,47 @@ impl VfsTree {
                 max_id = id;
             }
 
+            let safe_name;
+            let suf_idx; // The index where the suffix block (lanzou_id) begins
+
+            if is_v2 {
+                // V2 strict layout: name is at index 3 and Base64 encoded (no pipes)
+                safe_name = String::from_utf8(STANDARD.decode(p[3]).unwrap_or_default())
+                    .unwrap_or_else(|_| p[3].to_string());
+                suf_idx = 4;
+            } else {
+                // Look at the tail elements to see if the optional boolean flags exist
+                let len = p.len();
+                let last_val = p[len - 1];
+                let prev_val = p[len - 2];
+
+                let (has_trashed, has_deleted) = match (prev_val, last_val) {
+                    ("true" | "false", "true" | "false") => (true, true),
+                    (_, "true" | "false") => (true, false),
+                    _ => (false, false),
+                };
+
+                // Base suffix is 6 fields (lanzou_id through chunks). Add flags if present.
+                let suffix_fields = 6 + (has_trashed as usize) + (has_deleted as usize);
+                suf_idx = len - suffix_fields;
+
+                // Reconstruct any filename that had a pipe in it by re-joining the middle chunks!
+                safe_name = p[3..suf_idx].join("|");
+            }
+
             let node = VfsNode {
                 node_type: NodeType::from_str(p[0]),
                 id,
                 pid: p[2].parse::<u64>().unwrap_or(0),
-                name: p[3].to_string(),
-                lanzou_id: p[4].to_string(),
-                time: p[5].parse::<u64>().unwrap_or(0),
-                size: p[6].to_string(),
-                md5: p[7].to_string(),
-                ext: p[8].to_string(),
-                chunks: p[9].to_string(),
-                is_trashed: p.get(10).unwrap_or(&"false") == &"true",
-                // Backward compatible for old save files without crashing
-                is_deleted: p.get(11).unwrap_or(&"false") == &"true",
+                name: safe_name,
+                lanzou_id: p[suf_idx].to_string(),
+                time: p[suf_idx + 1].parse::<u64>().unwrap_or(0),
+                size: p[suf_idx + 2].to_string(),
+                md5: p[suf_idx + 3].to_string(),
+                ext: p[suf_idx + 4].to_string(),
+                chunks: p[suf_idx + 5].to_string(),
+                is_trashed: p.get(suf_idx + 6).unwrap_or(&"false") == &"true",
+                is_deleted: p.get(suf_idx + 7).unwrap_or(&"false") == &"true",
             };
 
             nodes.insert(id, node);
@@ -221,9 +250,9 @@ impl VfsTree {
     pub fn to_tsv(&self) -> String {
         let mut output = String::new();
 
-        // Header
+        // --- MINIMUM FIX 2: Change Header to V2 ---
         output.push_str(&format!(
-            "V1|{}|{}|{}|{}\n",
+            "V2|{}|{}|{}|{}\n",
             self.last_modified,
             self.nodes.len(),
             self.root_lanzou_id,
@@ -232,12 +261,14 @@ impl VfsTree {
 
         // Rows
         for node in self.nodes.values() {
+            let encoded_name = STANDARD.encode(&node.name);
+
             output.push_str(&format!(
                 "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
                 node.node_type.as_str(),
                 node.id,
                 node.pid,
-                node.name,
+                encoded_name,
                 node.lanzou_id,
                 node.time,
                 node.size,

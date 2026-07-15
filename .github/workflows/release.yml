@@ -200,9 +200,76 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: 'src-tauri/gen/android/app/build/outputs/apk/**/*.apk'
 
+  publish-ios:
+    needs: create-release
+    permissions:
+      contents: write
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Rust stable with iOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build Unsigned iOS App & Package IPA
+        env:
+          HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
+          CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
+        run: |
+          # 1. Trigger Tauri to build frontend & Rust (it may throw a signing error at the end, which we ignore)
+          export CODE_SIGNING_ALLOWED=NO
+          export CODE_SIGNING_REQUIRED=NO
+          export CODE_SIGNING_IDENTITY=""
+          npm run tauri ios build || true
+
+          # 2. Force an unsigned raw Xcode build for physical iOS devices
+          cd src-tauri/gen/apple
+          APP_NAME=$(ls *.xcworkspace | sed 's/\.xcworkspace//')
+          
+          xcodebuild build \
+            -workspace "$APP_NAME.xcworkspace" \
+            -scheme "${APP_NAME}_iOS" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_IDENTITY="" \
+            CONFIGURATION_BUILD_DIR="$(pwd)/build/Release-iphoneos"
+
+          # 3. Forge the sideloadable .ipa (just a zip file wrapping a 'Payload' folder)
+          cd build/Release-iphoneos
+          mkdir Payload
+          mv *.app Payload/
+          zip -qr ../../../../../${APP_NAME}-iOS-Unsigned.ipa Payload
+
+      - name: Upload IPA to Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: '*-iOS-Unsigned.ipa'
+
   # --- PHASE 4: AUTOMATICALLY PUBLISH THE RELEASE ---
   finalize-release:
-    needs: [publish-tauri, publish-android]
+    needs: [publish-tauri, publish-android, publish-ios]
     permissions:
       contents: write
     runs-on: ubuntu-22.04
