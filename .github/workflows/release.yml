@@ -233,28 +233,34 @@ jobs:
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
           CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
         run: |
-          export CODE_SIGNING_ALLOWED=NO
-          export CODE_SIGNING_REQUIRED=NO
-          export CODE_SIGNING_IDENTITY=""
+          mkdir -p /tmp/xcode-bypass
+          cat << 'EOF' > /tmp/xcode-bypass/xcodebuild
+          
+          exec /usr/bin/xcodebuild "$@" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGNING_IDENTITY=""
+          EOF
+          chmod +x /tmp/xcode-bypass/xcodebuild
+          export PATH="/tmp/xcode-bypass:$PATH"
+
           npm run tauri ios build || true
 
-          cd src-tauri/gen/apple
-          APP_NAME=$(ls | grep \.xcodeproj$ | sed 's/\.xcodeproj//')
-          
-          xcodebuild build \
-            -project "$APP_NAME.xcodeproj" \
-            -scheme "${APP_NAME}_iOS" \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_IDENTITY="" \
-            CONFIGURATION_BUILD_DIR="$(pwd)/build/Release-iphoneos"
+          APP_PATH=$(find src-tauri/gen/apple -type d -name "*.app" | grep -v "iphonesimulator" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            # Fallback search if it was pushed to Xcode's default DerivedData folder
+            APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -type d -name "*.app" | grep -v "iphonesimulator" | head -n 1)
+          fi
 
-          cd build/Release-iphoneos
-          mkdir Payload
-          mv *.app Payload/
-          zip -qr ../../../../../${APP_NAME}-iOS-Unsigned.ipa Payload
+          if [ -z "$APP_PATH" ]; then
+            echo "Failed to find the compiled .app file. The build likely failed."
+            exit 1
+          fi
+          
+          echo "Found app at: $APP_PATH"
+
+          APP_NAME=$(basename "$APP_PATH" .app)
+          mkdir -p Payload
+          
+          cp -a "$APP_PATH" Payload/
+          zip -qry "${APP_NAME}-iOS-Unsigned.ipa" Payload
 
       - name: Upload IPA to Release
         uses: softprops/action-gh-release@v2
