@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.1] – 2026-07-15
 
 ### 新增
-- 编译iOS安装包供用户自行签名使用。
+- 无。
 
 ### 变更
 - 将vfs升级成v2版本，使用base64加密文件名，防止“|”符号冲突，同时会将所有仍为v1版本的本地文件升级成v2版本，确保已经有的会被错误识别的文件名也能正确被识别已经升级。
@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 无。
 
 ### Added
-- Compile the iOS installation package for users to sign themselves.
+- None.
 
 ### Changed
 - The VFS is being upgraded to version 2, utilizing Base64 encoding for filenames to prevent conflicts involving the | character. Additionally, all existing local files still on version 1 will be upgraded to version 2, ensuring that filenames previously prone to misidentification are correctly recognized as upgraded.
