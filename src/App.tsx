@@ -1,6 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { type } from "@tauri-apps/plugin-os";
 import { open as openBrowser } from "@tauri-apps/plugin-shell";
+import ReactMarkdown from 'react-markdown';
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
@@ -100,36 +101,22 @@ export default function App() {
         const ver = await getVersion();
         setAppVersion(ver);
         
-        const res = await fetch("https://api.github.com/repos/AgainsTurb/HeriHeriCloud/releases/latest");
+        const res = await fetch(`https://cdn.jsdelivr.net/gh/AgainsTurb/HeriHeriCloud/CHANGELOG.md`);
         if (!res.ok) return;
-        const data = await res.json();
+        const text = await res.text();
         
-        // Strip the 'v' from the GitHub tag (e.g., 'v1.0.0' -> '1.0.0')
-        const latestVer = data.tag_name.replace(/^v/, '');
+        // Regex extracts the very first version number and everything up to the next "## ["
+        const match = text.match(/##\s*\[([^\]]+)\][^\n]*\n([\s\S]*?)(?=\n##\s*\[|$)/);
+        if (!match) return;
+
+        const latestVer = match[1];
+        const changelogBody = match[2].trim();
         
         if (latestVer !== ver) {
-          const osType = await type(); // Returns 'windows', 'macos', 'linux', etc.
-          let targetUrl = data.html_url; // Fallback to the general release page
-          
-          // Hunt for the exact OS artifact
-          const asset = data.assets.find((a: any) => {
-            const name = a.name.toLowerCase();
-            if (osType === 'windows' && (name.endsWith('.exe') || name.endsWith('.msi'))) return true;
-            if (osType === 'macos' && (name.endsWith('.dmg') || name.endsWith('.app.tar.gz'))) return true;
-            if (osType === 'linux' && (name.endsWith('.appimage') || name.endsWith('.deb') || name.endsWith('.rpm'))) return true;
-            if (osType === 'android' && name.endsWith('.apk')) return true;
-            return false;
-          });
-
-          // Prepend the proxy for mainland China acceleration
-          if (asset) {
-            targetUrl = `https://gh-proxy.org/${asset.browser_download_url}`;
-          }
-
           setUpdateAvailable({
-            version: data.tag_name,
-            body: data.body,
-            url: targetUrl
+            version: `v${latestVer}`,
+            body: changelogBody,
+            url: `https://github.com/AgainsTurb/HeriHeriCloud/releases/latest`
           });
         }
       } catch (err) {
@@ -640,11 +627,9 @@ export default function App() {
 
             <div style={styles.inputGroup}>
               <label style={styles.inputLabel}>{t("Release Notes")}</label>
-              <textarea 
-                style={{...styles.input, flex: 1, minHeight: "140px", fontSize: "12px", resize: "none", backgroundColor: "#f9fafb", lineHeight: "1.5"}} 
-                readOnly 
-                value={updateAvailable.body || t("No changelog provided.")} 
-              />
+              <div style={{...styles.input, flex: 1, minHeight: "140px", maxHeight: "250px", overflowY: "auto", fontSize: "12px", backgroundColor: "#f9fafb", lineHeight: "1.5"}}>
+                <ReactMarkdown>{updateAvailable.body || t("No changelog provided.")}</ReactMarkdown>
+              </div>
             </div>
 
             <div style={styles.modalActions}>

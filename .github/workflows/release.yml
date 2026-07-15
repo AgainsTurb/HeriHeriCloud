@@ -233,18 +233,16 @@ jobs:
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
           CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
         run: |
-          # 1. Trigger Tauri to build frontend & Rust (it may throw a signing error at the end, which we ignore)
           export CODE_SIGNING_ALLOWED=NO
           export CODE_SIGNING_REQUIRED=NO
           export CODE_SIGNING_IDENTITY=""
           npm run tauri ios build || true
 
-          # 2. Force an unsigned raw Xcode build for physical iOS devices
           cd src-tauri/gen/apple
-          APP_NAME=$(ls *.xcworkspace | sed 's/\.xcworkspace//')
+          APP_NAME=$(ls | grep \.xcodeproj$ | sed 's/\.xcodeproj//')
           
           xcodebuild build \
-            -workspace "$APP_NAME.xcworkspace" \
+            -project "$APP_NAME.xcodeproj" \
             -scheme "${APP_NAME}_iOS" \
             -configuration Release \
             -destination "generic/platform=iOS" \
@@ -253,7 +251,6 @@ jobs:
             CODE_SIGNING_IDENTITY="" \
             CONFIGURATION_BUILD_DIR="$(pwd)/build/Release-iphoneos"
 
-          # 3. Forge the sideloadable .ipa (just a zip file wrapping a 'Payload' folder)
           cd build/Release-iphoneos
           mkdir Payload
           mv *.app Payload/
