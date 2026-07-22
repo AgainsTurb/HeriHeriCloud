@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+---
+
+## [1.1.2] – 2026-07-22
+
+### 新增
+- 无。
+
+### 变更
+- 增强文件续传的功能。
+
+### 修复
+- 修复主页无法搜索文件的问题。
+
+### Added
+- None.
+
+### Changed
+- Enhanced file resume capability.
+
+### Fixed
+- Fixed an issue where files could not be searched for on the home page.
+
+---
+
 
 ---
 

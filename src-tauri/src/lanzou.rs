@@ -1575,24 +1575,52 @@ pub async fn vfs_upload_file(
         final_lanzou_id = res.unwrap();
         final_chunks = 1;
     } else {
-        final_lanzou_id = if resume_folder.is_empty() {
-            let res = lanzou_clone
-                .create_folder_in_target(md5_str.clone(), "".to_string(), target_lanzou_folder)
-                .await?;
-            res["text"].as_str().unwrap_or("").to_string()
-        } else {
-            resume_folder.clone()
-        };
+        let mut actual_resume_folder = resume_folder.clone();
+        let mut actual_resume_chunk = resume_chunk;
+
+        if actual_resume_folder.is_empty() {
+            if let Ok(folders) = lanzou_clone.list_folders_by_id(&target_lanzou_folder).await {
+                if let Some(existing) = folders.iter().find(|f| {
+                    let folder_name = f["name_all"].as_str().unwrap_or_else(|| f["name"].as_str().unwrap_or(""));
+                    folder_name == md5_str
+                }) {
+                    actual_resume_folder = existing["fol_id"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| existing["fol_id"].as_u64().map(|n| n.to_string()))
+                        .unwrap_or_default();
+                }
+            }
+
+            if !actual_resume_folder.is_empty() {
+                if let Ok(files) = lanzou_clone.list_files_by_id(&actual_resume_folder).await {
+                    actual_resume_chunk = files.len();
+                    println!("[SYNC] Smart Resume Found: {} chunks safely preserved on cloud.", actual_resume_chunk);
+                }
+            } else {
+                let res = lanzou_clone
+                    .create_folder_in_target(md5_str.clone(), "".to_string(), target_lanzou_folder.clone())
+                    .await?;
+                
+                actual_resume_folder = res["text"]
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| res["text"].as_u64().map(|n| n.to_string()))
+                    .unwrap_or_default();
+            }
+        }
+
+        final_lanzou_id = actual_resume_folder;
 
         if final_lanzou_id.is_empty() {
-            return Err("Failed to create chunk directory on cloud".to_string());
+            return Err("Failed to create or resolve chunk directory on cloud".to_string());
         }
 
         let num_chunks = (total_size + chunk_limit - 1) / chunk_limit;
         final_chunks = num_chunks as u32;
-        let mut current_loaded = resume_chunk * chunk_limit;
+        let mut current_loaded = actual_resume_chunk * chunk_limit;
 
-        for i in resume_chunk..num_chunks {
+        for i in actual_resume_chunk..num_chunks {
             let start = i * chunk_limit;
             let end = std::cmp::min(start + chunk_limit, total_size);
 
@@ -2900,28 +2928,52 @@ pub async fn vfs_search(
     query: String,
     state: tauri::State<'_, crate::lanzou::AppState>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    
     let vfs_guard = state.vfs.lock().await;
     let tree = vfs_guard.as_ref().ok_or("VFS Offline")?;
     let q = query.to_lowercase();
     let mut results = Vec::new();
 
     for node in tree.nodes.values() {
-        if !node.is_deleted && !node.is_trashed && node.name.to_lowercase().contains(&q) {
-            // Build the string path recursively upwards
-            let mut path_parts = Vec::new();
-            let mut current_pid = node.pid;
+        if !node.is_deleted && !node.is_trashed {
+            // If the V2 migration accidentally left the name as Base64 in memory, decode it on the fly.
+            let decoded_name = STANDARD.decode(&node.name)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .unwrap_or_else(|| node.name.clone());
 
-            while let Some(parent) = tree.nodes.get(&current_pid) {
-                path_parts.push(parent.name.clone());
-                current_pid = parent.pid;
+            // Allow users to paste physical Lanzou MD5 folder names or Cloud IDs to trace encrypted files!
+            let is_match = decoded_name.to_lowercase().contains(&q)
+                || node.md5.to_lowercase().contains(&q)
+                || node.lanzou_id.to_lowercase().contains(&q);
+
+            if is_match {
+                // Build the string path recursively upwards
+                let mut path_parts = Vec::new();
+                let mut current_pid = node.pid;
+
+                while let Some(parent) = tree.nodes.get(&current_pid) {
+                    // Decode parent names for the breadcrumb path too
+                    let parent_name = STANDARD.decode(&parent.name)
+                        .ok()
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .unwrap_or_else(|| parent.name.clone());
+                    
+                    path_parts.push(parent_name);
+                    current_pid = parent.pid;
+                }
+                path_parts.push("All Files".to_string());
+                path_parts.reverse();
+
+                // Merge the path_str into the standard node JSON response
+                let mut json_node = serde_json::to_value(node).map_err(|e| e.to_string())?;
+                
+                // Force the frontend to render the decrypted plaintext name, not the Base64!
+                json_node["name"] = serde_json::Value::String(decoded_name);
+                json_node["path_str"] = serde_json::Value::String(path_parts.join(" > "));
+                results.push(json_node);
             }
-            path_parts.push("All Files".to_string());
-            path_parts.reverse();
-
-            // Merge the path_str into the standard node JSON response
-            let mut json_node = serde_json::to_value(node).map_err(|e| e.to_string())?;
-            json_node["path_str"] = serde_json::Value::String(path_parts.join(" > "));
-            results.push(json_node);
         }
     }
 
