@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 修复
 - 修复主页无法搜索文件的问题。
+- 修复无法获取最新版本的问题。
 
 ### Added
 - None.
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fixed an issue where files could not be searched for on the home page.
+- Fixed an issue where the latest version could not be retrieved.
 
 ---
 

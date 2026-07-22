@@ -101,7 +101,9 @@ export default function App() {
         const ver = await getVersion();
         setAppVersion(ver);
         
-        const res = await fetch(`https://cdn.jsdelivr.net/gh/AgainsTurb/HeriHeriCloud/CHANGELOG.md`);
+        const res = await fetch(`https://cdn.jsdelivr.net/gh/AgainsTurb/HeriHeriCloud/CHANGELOG.md?t=${Date.now()}`, {
+          cache: 'no-store'
+        });
         if (!res.ok) return;
         const text = await res.text();
         
@@ -112,7 +114,7 @@ export default function App() {
         const latestVer = match[1];
         const changelogBody = match[2].trim();
         
-        if (latestVer !== ver) {
+        if (latestVer.localeCompare(ver, undefined, { numeric: true, sensitivity: 'base' }) > 0) {
           setUpdateAvailable({
             version: `v${latestVer}`,
             body: changelogBody,
