@@ -86,12 +86,12 @@ fn get_filename_cipher() -> ChaCha20Poly1305 {
 }
 
 /// Encrypts the payload into an un-analyzable 36-character string matching Lanzou constraints
-pub fn encrypt_chunk_filename(md5_str: &str, chunk_index: u32) -> String {
+pub fn encrypt_chunk_filename(_md5_str: &str, chunk_index: u32) -> String {
     let cipher = get_filename_cipher();
     
     let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
 
-    let plaintext = format!("{}{:04x}", md5_str, chunk_index);
+    let plaintext = format!("{:04x}", chunk_index);
     let ciphertext = cipher.encrypt(&nonce, plaintext.as_bytes()).expect("Crypto Fail");
 
     let mut payload = nonce.to_vec();
@@ -2454,8 +2454,8 @@ pub async fn vfs_download_file(
         let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
         
         all_files.sort_by(|a, b| {
-            let na = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let nb = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let na = a.get("name_all").and_then(|n| n.as_str()).unwrap_or_else(|| a.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+            let nb = b.get("name_all").and_then(|n| n.as_str()).unwrap_or_else(|| b.get("name").and_then(|n| n.as_str()).unwrap_or(""));
 
             let mut get_idx = |name: &str| -> u32 {
                 // 1. Try to decrypt using the new cryptographic covert layout
@@ -2470,6 +2470,8 @@ pub async fn vfs_download_file(
                 if let Some(caps) = re_legacy.captures(name) {
                     return caps[1].parse::<u32>().unwrap_or(0);
                 }
+                
+                // 4. Ultimate Fallback: If decryption fails (old truncated files), return 0.
                 0
             };
 
