@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.1.4] – 2026-07-24
+
+### 新增
+- 无。
+
+### 变更
+- 无。
+
+### 修复
+- 增强文件断点续传稳定性以及优化上传端口。
+- 修复更新检测。
+
+### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- Enhanced stability of file resume upload and optimized upload port.
+- Fix update detection.
+
+---
+
+---
+
 ## [1.1.3] – 2026-07-23
 
 ### 新增

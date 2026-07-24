@@ -815,23 +815,76 @@ impl LanzouCloud {
         let mime = mime_guess::from_path(&safe_name)
             .first_or_octet_stream()
             .to_string();
-        let parent_id = if target_folder == "-1" {
-            "0".to_string()
-        } else {
-            target_folder
-        };
+        let parent_id = if target_folder == "-1" { "0".to_string() } else { target_folder };
 
         let total_bytes = bytes.len();
         let chunk_size = 256 * 1024;
 
+        // Use a dedicated stream-abortion flag.
+        let stalled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shared_offset = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let stall_clone = stalled.clone();
+        let offset_watchdog = shared_offset.clone();
+        let task_flag_watchdog = task_flag.clone();
+        let limit_watchdog = upload_limit.clone();
+        let total_bytes_watchdog = total_bytes;
+
+        let watchdog_handle = tokio::spawn(async move {
+            let mut last_offset = 0;
+            let mut server_wait_ticks = 0;
+
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if task_flag_watchdog.load(Ordering::SeqCst) != 0 { break; } 
+                
+                let current_offset = offset_watchdog.load(Ordering::SeqCst);
+                
+                // Phase 2: If data is 100% sent, Lanzou often hangs while combining the file.
+                if current_offset >= total_bytes_watchdog {
+                    server_wait_ticks += 1;
+                    if server_wait_ticks > 6 { // 30 seconds max wait for Lanzou's HTTP 200 OK
+                        println!("[WATCHDOG] Lanzou server hung processing the file. Force-aborting...");
+                        stall_clone.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    continue;
+                }
+
+                let bytes_sent = current_offset.saturating_sub(last_offset);
+                
+                let mut min_expected = 750_000;
+                
+                // Scale down expectation if user explicitly set a slower manual limit
+                let user_limit_kb = limit_watchdog.load(Ordering::Relaxed);
+                if user_limit_kb > 0 {
+                    min_expected = std::cmp::min(min_expected, (user_limit_kb as usize * 1024 * 5) / 2);
+                }
+
+                if bytes_sent < min_expected {
+                    println!("[WATCHDOG] Speed dropped to dead levels ({} B/5s). Triggering auto-retry...", bytes_sent);
+                    stall_clone.store(true, Ordering::SeqCst);
+                    break;
+                }
+                last_offset = current_offset;
+            }
+        });
+
+        let task_flag_stream = task_flag.clone();
         let stream = async_stream::stream! {
             let mut offset = 0;
             let mut start_time = tokio::time::Instant::now();
 
             while offset < total_bytes {
-                let state = task_flag.load(Ordering::SeqCst);
+                let state = task_flag_stream.load(Ordering::SeqCst);
                 if state == 1 { yield Err::<bytes::Bytes, std::io::Error>(std::io::Error::new(std::io::ErrorKind::Interrupted, "PAUSED")); break; }
                 if state == 2 { yield Err::<bytes::Bytes, std::io::Error>(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "CANCELLED")); break; }
+                
+                // IF the watchdog detected a stall or low speed, yield an error to kill Reqwest!
+                if stalled.load(Ordering::SeqCst) {
+                    yield Err::<bytes::Bytes, std::io::Error>(std::io::Error::new(std::io::ErrorKind::TimedOut, "NETWORK_STALLED")); 
+                    break; 
+                }
 
                 let end = std::cmp::min(offset + chunk_size, total_bytes);
                 let chunk = bytes.slice(offset..end);
@@ -845,10 +898,11 @@ impl LanzouCloud {
                     }
                 }
                 start_time = tokio::time::Instant::now();
-
                 offset = end;
 
-                // Emit real-time byte-level progress to React
+                // Sync exact progress to the watchdog
+                shared_offset.store(offset, Ordering::SeqCst);
+
                 let _ = app.emit("upload_progress", ProgressPayload {
                     task_id: task_id.clone(),
                     loaded: offset_base + offset,
@@ -859,7 +913,6 @@ impl LanzouCloud {
             }
         };
 
-        // Wrap the stream into a Reqwest body
         let body = reqwest::Body::wrap_stream(stream);
         let part = multipart::Part::stream_with_length(body, total_bytes as u64)
             .file_name(safe_name.clone())
@@ -867,7 +920,6 @@ impl LanzouCloud {
             .unwrap();
 
         let wu_id = format!("WU_FILE_{}", file_index);
-
         let form = multipart::Form::new()
             .text("task", "1")
             .text("vie", "2")
@@ -889,10 +941,13 @@ impl LanzouCloud {
             .header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8")
             .multipart(form)
             .send()
-            .await
-            .map_err(|e| e.to_string())?;
+            .await;
 
+        watchdog_handle.abort();
+
+        let resp = resp.map_err(|e| e.to_string())?;
         let json: Value = resp.json().await.map_err(|e| e.to_string())?;
+        
         if json["zt"] == 1 {
             let file_id = json["text"][0]["id"].as_str().unwrap_or("").to_string();
             Ok(file_id)
@@ -1476,13 +1531,21 @@ pub async fn vfs_upload_file(
         .to_string();
     let safe_ext = crate::heriheri::get_safe_lanzou_ext(&original_ext);
 
-    let (bytes, md5_str, total_size, size_str) = tokio::task::spawn_blocking(move || {
-        let b = std::fs::read(&path).map_err(|e| e.to_string())?;
-        let t = b.len();
-        let s = t.to_string();
-        let h = md5::compute(&b);
-        let m = format!("{:x}", h);
-        Ok::<_, String>((bytes::Bytes::from(b), m, t, s))
+    let path_clone = path.clone();
+    let (md5_str, total_size, size_str) = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path_clone).map_err(|e| e.to_string())?;
+        let mut context = md5::Context::new();
+        let mut buffer = [0u8; 65536];
+        let mut total_size = 0;
+        loop {
+            let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if count == 0 { break; }
+            context.consume(&buffer[..count]);
+            total_size += count;
+        }
+        let m = format!("{:x}", context.compute());
+        Ok::<_, String>((m, total_size, total_size.to_string()))
     })
     .await
     .unwrap()?;
@@ -1551,28 +1614,51 @@ pub async fn vfs_upload_file(
 
     if total_size <= chunk_limit {
         let safe_name = format!("{}.{}", md5_str, safe_ext);
-        let res = lanzou_clone
-            .upload_file_direct(
-                bytes,
-                safe_name,
-                target_lanzou_folder,
-                app.clone(),
-                task_id.clone(),
-                0,
-                total_size,
-                task_flag.clone(),
-                state.upload_limit.clone(),
-                0,
-            )
-            .await;
+        
+        let mut retry = 0;
+        let upload_res = loop {
+            let chunk_bytes = match std::fs::File::open(&path) {
+                Ok(mut file) => {
+                    let mut buf = vec![0; total_size];
+                    use std::io::Read;
+                    if file.read_exact(&mut buf).is_ok() { Some(bytes::Bytes::from(buf)) } else { None }
+                },
+                Err(_) => None,
+            };
 
-        if let Err(e) = res {
-            if e.contains("CANCELLED") {
-                return Err("CANCELLED".to_string());
+            let chunk_bytes = match chunk_bytes {
+                Some(b) => b,
+                None => {
+                    retry += 1;
+                    if retry >= 10000 { break Err("Local Disk Read Error".to_string()); }
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+            };
+
+            let res = lanzou_clone
+                .upload_file_direct(
+                    chunk_bytes, safe_name.clone(), target_lanzou_folder.clone(),
+                    app.clone(), task_id.clone(), 0, total_size,
+                    task_flag.clone(), state.upload_limit.clone(), 0,
+                ).await;
+            
+            match res {
+                Ok(val) => break Ok(val),
+                Err(e) => {
+                    if e.contains("PAUSED") || e.contains("CANCELLED") { break Err(e); }
+                    retry += 1;
+                    if retry >= 10000 { break Err(e); }
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
             }
+        };
+
+        if let Err(e) = upload_res {
+            if e.contains("CANCELLED") { return Err("CANCELLED".to_string()); }
             return Err(e);
         }
-        final_lanzou_id = res.unwrap();
+        final_lanzou_id = upload_res.unwrap();
         final_chunks = 1;
     } else {
         let mut actual_resume_folder = resume_folder.clone();
@@ -1585,10 +1671,7 @@ pub async fn vfs_upload_file(
                     folder_name == md5_str
                 }) {
                     actual_resume_folder = existing["fol_id"]
-                        .as_str()
-                        .map(|s| s.to_string())
-                        .or_else(|| existing["fol_id"].as_u64().map(|n| n.to_string()))
-                        .unwrap_or_default();
+                        .as_str().map(|s| s.to_string()).or_else(|| existing["fol_id"].as_u64().map(|n| n.to_string())).unwrap_or_default();
                 }
             }
 
@@ -1601,20 +1684,13 @@ pub async fn vfs_upload_file(
                 let res = lanzou_clone
                     .create_folder_in_target(md5_str.clone(), "".to_string(), target_lanzou_folder.clone())
                     .await?;
-                
                 actual_resume_folder = res["text"]
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .or_else(|| res["text"].as_u64().map(|n| n.to_string()))
-                    .unwrap_or_default();
+                    .as_str().map(|s| s.to_string()).or_else(|| res["text"].as_u64().map(|n| n.to_string())).unwrap_or_default();
             }
         }
 
         final_lanzou_id = actual_resume_folder;
-
-        if final_lanzou_id.is_empty() {
-            return Err("Failed to create or resolve chunk directory on cloud".to_string());
-        }
+        if final_lanzou_id.is_empty() { return Err("Failed to resolve cloud folder".to_string()); }
 
         let num_chunks = (total_size + chunk_limit - 1) / chunk_limit;
         final_chunks = num_chunks as u32;
@@ -1623,36 +1699,59 @@ pub async fn vfs_upload_file(
         for i in actual_resume_chunk..num_chunks {
             let start = i * chunk_limit;
             let end = std::cmp::min(start + chunk_limit, total_size);
-
-            let chunk_bytes = bytes.slice(start..end);
             let chunk_name = format!("{}.zip", encrypt_chunk_filename(&md5_str, (i + 1) as u32));
 
-            let upload_res = lanzou_clone
-                .upload_file_direct(
-                    chunk_bytes,
-                    chunk_name,
-                    final_lanzou_id.clone(),
-                    app.clone(),
-                    task_id.clone(),
-                    current_loaded,
-                    total_size,
-                    task_flag.clone(),
-                    state.upload_limit.clone(),
-                    i,
-                )
-                .await;
+            let mut retry = 0;
+            let upload_res = loop {
+                let chunk_bytes = match std::fs::File::open(&path) {
+                    Ok(mut file) => {
+                        use std::io::{Seek, Read};
+                        if file.seek(std::io::SeekFrom::Start(start as u64)).is_ok() {
+                            let mut buf = vec![0; end - start];
+                            if file.read_exact(&mut buf).is_ok() { Some(bytes::Bytes::from(buf)) } else { None }
+                        } else { None }
+                    },
+                    Err(_) => None,
+                };
+
+                let chunk_bytes = match chunk_bytes {
+                    Some(b) => b,
+                    None => {
+                        retry += 1;
+                        if retry >= 10000 { break Err("Local Disk Read Error".to_string()); }
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        continue;
+                    }
+                };
+
+                let res = lanzou_clone
+                    .upload_file_direct(
+                        chunk_bytes, chunk_name.clone(), final_lanzou_id.clone(),
+                        app.clone(), task_id.clone(), current_loaded, total_size,
+                        task_flag.clone(), state.upload_limit.clone(), 
+                        i % 300 // MINIMUM FIX 2: Bypasses Lanzou's ancient WebUploader limit!
+                    ).await;
+                
+                match res {
+                    Ok(val) => break Ok(val),
+                    Err(e) => {
+                        if e.contains("PAUSED") || e.contains("CANCELLED") { break Err(e); }
+                        retry += 1;
+                        if retry >= 10000 { break Err(e); }
+                        println!("[SYNC] Chunk {} Network Error. Retrying {}...", i, retry);
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
+                }
+            };
 
             if let Err(e) = upload_res {
-                if e.contains("PAUSED") {
-                    return Err(format!("PAUSED:{}|{}", final_lanzou_id, i));
-                }
+                if e.contains("PAUSED") { return Err(format!("PAUSED:{}|{}", final_lanzou_id, i)); }
                 if e.contains("CANCELLED") {
-                    lanzou_clone.delete_folder(final_lanzou_id).await?;
+                    let _ = lanzou_clone.delete_folder(final_lanzou_id).await;
                     return Err("CANCELLED".to_string());
                 }
                 return Err(e);
             }
-            // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             current_loaded += end - start;
         }
     }

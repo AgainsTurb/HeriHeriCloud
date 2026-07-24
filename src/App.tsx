@@ -118,7 +118,7 @@ export default function App() {
           setUpdateAvailable({
             version: `v${latestVer}`,
             body: changelogBody,
-            url: `https://github.com/AgainsTurb/HeriHeriCloud/releases/latest`
+            url: `https://github.com/AgainsTurb/HeriHeriCloud/releases/tag/v${latestVer}`
           });
         }
       } catch (err) {
@@ -644,7 +644,9 @@ export default function App() {
               <button 
                 style={styles.primaryButton} 
                 onClick={async () => {
-                  await openBrowser(updateAvailable.url);
+                  await openBrowser(updateAvailable.url).catch(() => {
+                    window.open(updateAvailable.url, '_blank');
+                  });
                   setShowUpdateModal(false);
                 }}
               >
