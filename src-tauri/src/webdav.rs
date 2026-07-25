@@ -208,17 +208,16 @@ async fn fallback_logger(method: axum::http::Method, uri: axum::http::Uri) -> im
     (StatusCode::NOT_FOUND, "Not Found")
 }
 
-pub async fn run_server(state: AppState) {
+pub async fn run_server(state: AppState, app: tauri::AppHandle) {
     let shared_state = Arc::new(state);
 
-    let app = Router::new()
-        // --- NATIVE PLAYER MOUNT ---
+    let app_router = Router::new()
         .route("/stream/:vfs_id", get(handle_stream))
-        // --- INFUSE / JELLYFIN WEBDAV MOUNT ---
         .route("/dav", axum::routing::any(handle_dav_dispatch))
         .route("/dav/", axum::routing::any(handle_dav_dispatch))
         .route("/dav/*path", axum::routing::any(handle_dav_dispatch))
-        // --- CATCH-ALL INTERCEPTOR ---
+        .route("/mcp", axum::routing::post(handle_mcp_http))
+        .layer(axum::Extension(app))
         .fallback(fallback_logger)
         .with_state(shared_state);
 
@@ -237,7 +236,11 @@ pub async fn run_server(state: AppState) {
         "[PROXY] WebDAV Mount available at http://127.0.0.1:{}/dav (User: {}, Pass: {})",
         port, config.username, config.password
     );
-    axum::serve(listener, app).await.unwrap();
+    println!(
+        "[MCP] Agent HTTP Endpoint ready at http://127.0.0.1:{}/mcp",
+        port
+    );
+    axum::serve(listener, app_router).await.unwrap();
 }
 
 async fn resolve_lanzou_media(
@@ -897,14 +900,13 @@ pub async fn boot_webdav_server(
     port: u16,
     username: String,
     password: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    // 1. Prevent the server from booting twice
     if SERVER_STARTED.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
 
-    // 2. Overwrite the RAM config with the frontend's saved data
     {
         let config_arc = get_config();
         let mut config = config_arc.lock().await;
@@ -913,10 +915,9 @@ pub async fn boot_webdav_server(
         config.password = password;
     }
 
-    // 3. Clone the app state and ignite the Axum server in the background
     let app_state = state.inner().clone();
     tokio::spawn(async move {
-        run_server(app_state).await;
+        run_server(app_state, app).await;
     });
 
     Ok(())
@@ -933,4 +934,12 @@ pub fn get_local_ip() -> String {
         }
     }
     "192.168.x.x".to_string() // Safe fallback
+}
+
+async fn handle_mcp_http(
+    axum::Extension(app): axum::Extension<tauri::AppHandle>,
+    axum::Json(req): axum::Json<crate::mcp::JsonRpcRequest>,
+) -> impl IntoResponse {
+    let response = crate::mcp::handle_mcp_request(req, app).await;
+    (StatusCode::OK, axum::Json(response))
 }

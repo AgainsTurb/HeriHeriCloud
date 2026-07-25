@@ -2,6 +2,7 @@ mod heriheri;
 mod lanzou;
 mod lanzou_down;
 mod webdav;
+mod mcp;
 use lanzou::{
     init_vfs_root, login, request_register_sms, set_lanzou_cookies, submit_register,
     vfs_batch_delete, vfs_control_task, vfs_create_folder, vfs_delete_item, vfs_download_file,
@@ -47,6 +48,16 @@ pub fn run() {
         .manage(app_state)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let args: Vec<String> = std::env::args().collect();
+            if args.contains(&"--agent".to_string()) {
+                let handle = app.handle().clone();
+                tokio::spawn(async move {
+                    mcp::run_stdio_mcp_server(handle).await;
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             set_lanzou_cookies,
             login,

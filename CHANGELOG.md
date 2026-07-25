@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.2.0] – 2026-07-25
+
+### 新增
+- 新增AI智能体MCP支持，让智能体管理云端文件。
+
+### 变更
+- 无。
+
+### 修复
+- 无。
+
+### Added
+- Added support for AI agent MCP, enabling agents to manage cloud files.
+
+### Changed
+- None.
+
+### Fixed
+- None.
+
+---
+
+---
+
 ## [1.1.4] – 2026-07-24
 
 ### 新增

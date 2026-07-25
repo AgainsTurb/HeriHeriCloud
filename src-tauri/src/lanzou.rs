@@ -1885,7 +1885,7 @@ fn get_files_recursively(dir: &std::path::Path, files: &mut Vec<String>) {
     }
 }
 
-async fn internal_create_folder(
+pub async fn internal_create_folder(
     name: &str,
     target_pid: u64,
     state: &AppState,

@@ -6,14 +6,23 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![Tauri](https://img.shields.io/badge/Tauri-v2-FFC131?logo=tauri&logoColor=white)](https://tauri.app/) [![React](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=black)](https://react.dev/) [![Platform](https://img.shields.io/badge/Platform-Windows_|_macOS_|_Linux_|_Android_|_iOS_-blue?logo=github)](#)
 
-HeriHeriCloud 是一个跨平台的云盘客户端解决方案。本项目以蓝奏云的无限存储空间和不限速带宽为底层基础设施，新增WebDAV挂载与其他高级功能，旨在为用户提供现代化、高性能的文件管理与分享体验。
+HeriHeriCloud 是一个跨平台的云盘客户端解决方案。本项目以蓝奏云的无限存储空间和不限速带宽为底层基础设施，新增WebDAV挂载、AI智能体接入(MCP)与其他高级功能，旨在为用户提供现代化、高性能的文件管理与分享体验。
 
 当前市场上，并没有哪一款云盘可以做到真正的不限速不限存储空间，包括蓝奏云。不过，各个主流云盘变得更加臃肿是不争的事实。它们为了塞进去更多的功能，从而抛弃了一个云盘最原始的作用：存储，下载以及浏览。同时，各个网盘开始封闭自己的环境生态，同时也将市场挤兑到饱和。我们对自己的定位很清晰，蓝奏云对于下载不限速，对于上传的限制普通用户也很难触及，同时也是做到不限存储空间，所以HeriHeriCloud旨在给用户提供一个简单便捷高效的云盘体验。用户可以只是用来传输一些资料而不需要去开通其他网盘的会员，用户也可以是希望搭建自己的小小的媒体库用WebDAV挂载观看视频电影，我们希望能覆盖普通用户到有专业网盘需求的用户。关于WebDAV挂载，目前多端设备均支持作为WebDAV代理，可以在局域网内挂载到Infuse，网易爆米花等媒体中心，同时也支持Raidrive挂载至本地网盘。对于HeriHeriCloud的网盘资源，目前仅限于用户自己上传使用，如果有人愿意在互联网上分享HeriHeriCloud网盘以及自己的资源链接，我们会无比荣幸。当然，目前来讲，一些蓝奏云盘的限制是无法避免的，比如说蓝奏云会限制每24小时中用户上传的流量大小，尚不明确具体的数值，但是可以确定这个限制是存在的。
+
+## AI 智能体 / MCP 接入 (全新功能)
+
+本项目原生支持大语言模型智能体（如 OpenCode, CC Switch, Cursor, Claude Desktop 等）进行自动化文件操作！
+
+* **OpenCode / CC Switch 用户**：在项目根目录的 `skill/` 文件夹中可以找到预打包的技能 ZIP 文件。在您的智能体客户端技能面板中，选择“从 ZIP 安装技能”，即可让 AI 自动为您上传、下载和管理云盘文件（AI 操作将被严格限制在安全的 `AgentWorkspace` 沙盒文件夹内）。
+* **Cursor / Claude Desktop 用户**：支持标准 STDIO 模式，在您的 MCP 配置文件中添加启动参数 `--agent`（如 `heriheri.exe --agent`），即可在后台开启无头模式对接。
+* **REST API 模式**：正常打开 HeriHeriCloud 客户端后，MCP 服务端会默认运行在 `http://127.0.0.1:8888/mcp`，支持自定义智能体通过 HTTP POST 调用。
 
 ## 核心特性
 
 * **跨平台架构**：基于 Tauri v2 + TypeScript + React 构建，确保在提供原生级性能和极低内存占用的同时，实现全平台代码复用。
 * **原生 WebDAV 服务**：内置轻量级 WebDAV 代理，将深层目录结构和文件直接映射为标准 WebDAV 协议，支持第三方播放器串流与系统级挂载。
+* **AI 智能体支持 (MCP)**：内置 Model Context Protocol (MCP) 双模式服务器，无缝接入 Cursor、OpenCode 等各大主流 AI 智能体，允许 AI 在安全沙盒内自主检索、上传、下载与管理云端文件。
 * **自定义虚拟文件系统 (VFS)**：突破底层云盘的目录层级和文件类型限制，在本地构建并维护完整的树状目录结构。
 * **高级媒体与文档预览**：内置视频流媒体实时缓冲代理，并支持文本、代码、图片及 PDF 文档的原生窗口预览。
 * **极速并发传输**：支持自定义并发数与速度限制，充分利用带宽上限，实现大文件的上传下载以及断点续传。
@@ -194,14 +203,23 @@ git push origin vx.x.x
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![Tauri](https://img.shields.io/badge/Tauri-v2-FFC131?logo=tauri&logoColor=white)](https://tauri.app/) [![React](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=black)](https://react.dev/) [![Platform](https://img.shields.io/badge/Platform-Windows_|_macOS_|_Linux_|_Android_|_iOS_-blue?logo=github)](#)
 
-HeriHeriCloud is a cross-platform cloud storage client solution. Built upon the infrastructure of Lanzou Cloud—leveraging its unlimited storage and unthrottled bandwidth—it incorporates WebDAV mounting and other advanced features to provide users with a modern, high-performance file management and sharing experience.
+HeriHeriCloud is a cross-platform cloud storage client solution. Built upon the infrastructure of Lanzou Cloud—leveraging its unlimited storage and unthrottled bandwidth—it incorporates WebDAV mounting, AI agent integration (MCP), and other advanced features to provide users with a modern, high-performance file management and sharing experience.
 
 Currently, no cloud storage service on the market offers truly unlimited speed and storage space—not even Lanzou Cloud. However, it is an undeniable fact that mainstream cloud services have become increasingly bloated; in their rush to cram in extra features, they have lost sight of the core functions of cloud storage: uploading, downloading, and browsing. Meanwhile, these services have created closed ecosystems and saturated the market. We have a clear vision for ourselves: HeriHeriCloud offers unlimited download speeds, upload limits that are virtually unreachable for the average user, and unlimited storage space. Our goal is to provide a simple, convenient, and efficient cloud storage experience. Whether a user simply needs to transfer files without purchasing a premium subscription elsewhere, or wants to build a personal media library—using WebDAV to stream movies and videos—we aim to cater to everyone from casual users to those with professional storage needs. Regarding WebDAV support, our service allows various devices to act as WebDAV proxies; they can be mounted within a local network to media centers like Infuse or NetEase Popcorn, or mounted as a local drive using RaiDrive. Currently, HeriHeriCloud resources are intended for personal use by the uploader, though we would be honored if users chose to share their HeriHeriCloud links publicly. Of course, certain limitations inherent to the underlying Lanzou Cloud infrastructure are unavoidable; for instance, there is a cap on the total volume of data a user can upload within a 24-hour period. While the exact figure is unspecified, the restriction is certainly in effect.
+
+## AI Agent / MCP Integration (NEW)
+
+This project natively supports Large Language Model agents (like OpenCode, CC Switch, Cursor, Claude Desktop, etc.) for automated file management!
+
+* **OpenCode / CC Switch Users**: You can find the pre-packaged skill ZIP file in the `skill/` folder at the project root. In your agent client's skills panel, select "Install from ZIP" to empower your AI to upload, download, and manage your cloud drive files automatically (all AI operations are strictly sandboxed within the `AgentWorkspace` folder).
+* **Cursor / Claude Desktop Users**: We support the standard STDIO MCP mode. Simply add the `--agent` launch flag in your MCP configuration (e.g., `heriheri.exe --agent`) for a headless background connection.
+* **REST API Mode**: When the HeriHeriCloud client is running normally, the MCP server actively listens at `http://127.0.0.1:8888/mcp`, allowing custom agents to connect via HTTP POST requests.
 
 ## Key Features
 
 * **Cross-Platform Architecture**: Built with Tauri v2 + TypeScript + React, ensuring native-level performance and exceptionally low memory usage while achieving code reuse across all platforms.
 * **Native WebDAV Service**: Features a built-in lightweight WebDAV proxy that maps deep directory structures and files into the standard WebDAV protocol, supporting third-party player streaming and system-level mounting.
+* **AI Agent Support (MCP)**: Features a built-in Model Context Protocol (MCP) dual-mode server, seamlessly connecting with major AI agents like Cursor and OpenCode. This allows AI to autonomously search, upload, download, and manage your cloud assets within a secure sandbox.
 * **Virtual File System (VFS)**: Overcomes the directory depth and file type restrictions of the underlying cloud drive by building and maintaining a complete, local tree-based directory structure.
 * **Advanced Media & Document Preview**: Includes a real-time buffering proxy for video streaming, along with native window previewers for text, code, images, and PDF documents.
 * **High-Speed Concurrent Transfers**: Supports custom concurrency limits and speed throttling, fully utilizing bandwidth capacity for large file chunk uploads, downloads and resumable transfer.
