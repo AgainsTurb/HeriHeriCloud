@@ -213,6 +213,7 @@ pub async fn run_server(state: AppState) {
     let app_router = Router::new()
         // --- WEB UI & APIs ---
         .route("/", get(serve_index))
+        .route("/index.html", get(serve_index))
         .route("/api/status", get(api_status))
         .route("/api/login", post(api_login))
         .route("/api/sync", post(api_sync))
@@ -222,6 +223,10 @@ pub async fn run_server(state: AppState) {
         .route("/dav", axum::routing::any(handle_dav_dispatch))
         .route("/dav/", axum::routing::any(handle_dav_dispatch))
         .route("/dav/*path", axum::routing::any(handle_dav_dispatch))
+        
+        // --- STATIC ASSETS CATCH-ALL ---
+        .route("/:path", get(serve_assets))
+        
         .fallback(fallback_logger)
         .with_state(shared_state);
 
@@ -514,11 +519,39 @@ fn append_propfind_node(
 
 // --- 1. Serve the embedded index.html ---
 async fn serve_index() -> impl IntoResponse {
-    let file = WebUiAssets::get("index.html").unwrap();
-    Response::builder()
-        .header("Content-Type", "text/html")
-        .body(axum::body::Body::from(file.data))
-        .unwrap()
+    match WebUiAssets::get("index.html") {
+        Some(file) => {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/html")
+                .body(axum::body::Body::from(file.data))
+                .unwrap()
+        }
+        None => {
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(axum::body::Body::from("WebUI not compiled. Ensure index.html is inside the webui/ folder!"))
+                .unwrap()
+        }
+    }
+}
+
+// --- 1.5 Serve standard browser assets (like favicon.ico) gracefully ---
+async fn serve_assets(Path(path): Path<String>) -> impl IntoResponse {
+    match WebUiAssets::get(&path) {
+        Some(file) => {
+            let mime = mime_guess::from_path(&path).first_or_octet_stream();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, mime.as_ref())
+                .body(axum::body::Body::from(file.data))
+                .unwrap()
+        }
+        None => {
+            // Silently return 404 for missing assets without spamming the terminal
+            StatusCode::NOT_FOUND.into_response()
+        }
+    }
 }
 
 // --- 2. Status API ---
