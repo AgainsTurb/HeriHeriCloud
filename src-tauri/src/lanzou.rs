@@ -2709,7 +2709,6 @@ async fn get_sync_folder_id(lanzou: &LanzouCloud) -> Result<String, String> {
 }
 
 async fn execute_sync_pull(state: &AppState) -> Result<bool, String> {
-    // --- MINIMUM FIX: Removed root_lanzou_id from the extraction ---
     let (lanzou, downloader, local_timestamp, local_path) = {
         let lanzou_guard = state.lanzou.lock().await;
         let down_guard = state.downloader.lock().await;

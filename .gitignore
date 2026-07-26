@@ -22,6 +22,7 @@ out/
 # -----------------------------
 # Rust / Tauri Backend
 # -----------------------------
+target
 src-tauri/target/
 **/*.rs.bk
 Cargo.lock.bk
