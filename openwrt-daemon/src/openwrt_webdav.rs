@@ -234,7 +234,14 @@ pub async fn run_server(state: AppState) {
     let config = config_arc.lock().await.clone();
     let port = config.port;
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            println!("\n[FATAL] Cannot bind to port {}: {}", port, e);
+            println!("[FATAL] Another HeriHeri instance is already running in the background!");
+            std::process::exit(1);
+        }
+    };
     println!("[PROXY] WebGUI available at http://127.0.0.1:{}", port);
     println!("[PROXY] WebDAV Mount available at http://127.0.0.1:{}/dav", port);
 
