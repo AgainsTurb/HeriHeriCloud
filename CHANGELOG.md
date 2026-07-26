@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.2.1] – 2026-07-26
+
+### 新增
+- 无。
+
+### 变更
+- 无。
+
+### 修复
+- 修复获取软件最新版本的逻辑。
+- 修复文件下载以及WebDAV挂载中的文件流式播放的链接解析问题。
+
+### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- Fixed the logic for retrieving the latest software version.
+- Fixed link resolution issues during file downloads and WebDAV mounting file streaming playback.
+
+---
+
+---
+
 ## [1.2.0] – 2026-07-25
 
 ### 新增

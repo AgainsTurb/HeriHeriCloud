@@ -1729,7 +1729,7 @@ pub async fn vfs_upload_file(
                         chunk_bytes, chunk_name.clone(), final_lanzou_id.clone(),
                         app.clone(), task_id.clone(), current_loaded, total_size,
                         task_flag.clone(), state.upload_limit.clone(), 
-                        i % 300 // MINIMUM FIX 2: Bypasses Lanzou's ancient WebUploader limit!
+                        i % 300
                     ).await;
                 
                 match res {
@@ -2465,7 +2465,6 @@ pub async fn vfs_download_file(
 
     let downloader = state.downloader.lock().await.clone();
 
-    // --- MINIMUM FIX: Attach standard browser headers to bypass CDN Range-Request blocks ---
     let req_client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .build()
@@ -2486,7 +2485,6 @@ pub async fn vfs_download_file(
 
         let mut resp = req.send().await.map_err(|e| e.to_string())?;
 
-        // --- MINIMUM FIX: Throw explicit error if CDN rejects the range request ---
         if !resp.status().is_success() {
             return Err(format!("CDN Error: HTTP {}", resp.status()));
         }
@@ -2497,7 +2495,6 @@ pub async fn vfs_download_file(
                 .map_err(|e| e.to_string())?;
         }
 
-        // --- MINIMUM FIX: Truncate file when starting from 0 to prevent byte overlap ---
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -2546,7 +2543,7 @@ pub async fn vfs_download_file(
     // --- CASE B: CHUNKED FILE REASSEMBLY ---
     else {
         let mut all_files = downloader
-            .get_lanzou_folder_links(&share_url, file_pwd.as_deref(), 5)
+            .get_lanzou_folder_metadata(&share_url, file_pwd.as_deref())
             .await?;
 
         let re_legacy = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
@@ -2557,65 +2554,78 @@ pub async fn vfs_download_file(
             let nb = b.get("name_all").and_then(|n| n.as_str()).unwrap_or_else(|| b.get("name").and_then(|n| n.as_str()).unwrap_or(""));
 
             let mut get_idx = |name: &str| -> u32 {
-                // 1. Try to decrypt using the new cryptographic covert layout
-                if let Some(idx) = decrypt_chunk_filename(name) {
-                    return idx;
-                }
-                // 2. Fallback to plaintext hex append pattern
-                if let Some(caps) = re_covert.captures(name) {
-                    return u32::from_str_radix(&caps[1], 16).unwrap_or(0);
-                }
-                // 3. Fallback to old legacy part designator pattern
-                if let Some(caps) = re_legacy.captures(name) {
-                    return caps[1].parse::<u32>().unwrap_or(0);
-                }
-                
-                // 4. Ultimate Fallback: If decryption fails (old truncated files), return 0.
+                if let Some(idx) = decrypt_chunk_filename(name) { return idx; }
+                if let Some(caps) = re_covert.captures(name) { return u32::from_str_radix(&caps[1], 16).unwrap_or(0); }
+                if let Some(caps) = re_legacy.captures(name) { return caps[1].parse::<u32>().unwrap_or(0); }
                 0
             };
-
             get_idx(na).cmp(&get_idx(nb))
         });
 
-        let chunk_size = 100 * 1024 * 1024; // 100MB EXACT
+        let chunk_size = 100 * 1024 * 1024;
         let start_chunk_idx = resume_offset / chunk_size;
         let mut part_resume_offset = resume_offset % chunk_size;
 
+        let parsed_share_url = reqwest::Url::parse(&share_url).unwrap();
+        let base_file_url = format!("{}://{}", parsed_share_url.scheme(), parsed_share_url.host_str().unwrap());
+
+        let mut next_resolve_task: Option<tokio::task::JoinHandle<Result<String, String>>> = None;
+
         for i in start_chunk_idx..all_files.len() {
-            let direct_url = all_files[i]
-                .get("direct_url")
-                .and_then(|u| u.as_str())
-                .unwrap_or("");
+            let file_id = all_files[i].get("id").and_then(|id| id.as_str()).unwrap_or("");
+            if file_id.is_empty() { return Err("Chunk missing Lanzou ID".into()); }
+            
+            let file_share_url = format!("{}/{}", base_file_url, file_id);
+            let mut retry_refresh = 0;
+            let mut direct_url_str = String::new();
 
-            if direct_url.is_empty() || direct_url == "null" {
-                return Err(format!(
-                    "Failed to resolve direct URL for chunk: {}",
-                    all_files[i]
-                        .get("error")
-                        .and_then(|e| e.as_str())
-                        .unwrap_or("Unknown")
-                ));
-            }
+            let mut resp = loop {
+                if direct_url_str.is_empty() {
+                    if let Some(task) = next_resolve_task.take() {
+                        direct_url_str = task.await.map_err(|e| e.to_string())??;
+                    } else {
+                        direct_url_str = downloader.get_lanzou_direct_link(&file_share_url, file_pwd.as_deref()).await?;
+                    }
+                }
 
-            let mut req = req_client.get(direct_url);
-            if part_resume_offset > 0 {
-                req = req.header("Range", format!("bytes={}-", part_resume_offset));
-            }
+                if next_resolve_task.is_none() && i + 1 < all_files.len() {
+                    let dl_clone = downloader.clone();
+                    let next_id = all_files[i + 1].get("id").and_then(|id| id.as_str()).unwrap_or("");
+                    let next_share_url = format!("{}/{}", base_file_url, next_id);
+                    let pwd_clone = file_pwd.clone();
+                    next_resolve_task = Some(tokio::spawn(async move {
+                        dl_clone.get_lanzou_direct_link(&next_share_url, pwd_clone.as_deref()).await
+                    }));
+                }
 
-            let mut resp = req.send().await.map_err(|e| e.to_string())?;
+                let mut req = req_client.get(&direct_url_str);
+                if part_resume_offset > 0 {
+                    req = req.header("Range", format!("bytes={}-", part_resume_offset));
+                }
 
-            if !resp.status().is_success() {
-                return Err(format!(
-                    "CDN Error on Chunk {}: HTTP {}",
-                    i + 1,
-                    resp.status()
-                ));
-            }
+                let r = req.send().await.map_err(|e| e.to_string())?;
+
+                let content_type = r.headers().get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()).unwrap_or("");
+                
+                if content_type.contains("text/html") {
+                    retry_refresh += 1;
+                    if retry_refresh > 3 { return Err("CDN links persistently expired".to_string()); }
+                    println!("[DOWNLOAD] Chunk {} link rejected! Retrying JIT resolve...", i + 1);
+                    
+                    direct_url_str = String::new();
+                    if let Some(task) = next_resolve_task.take() { task.abort(); }
+                    continue;
+                }
+
+                if !r.status().is_success() {
+                    return Err(format!("CDN Error on Chunk {}: HTTP {}", i + 1, r.status()));
+                }
+                break r;
+            };
 
             if let Some(parent) = std::path::Path::new(&local_path).parent() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
             }
 
             let mut file = OpenOptions::new()
@@ -2631,12 +2641,8 @@ pub async fn vfs_download_file(
 
             while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
                 let flag = task_flag.load(Ordering::SeqCst);
-                if flag == 1 {
-                    return Err(format!("PAUSED:{}", current_loaded));
-                }
-                if flag == 2 {
-                    return Err("CANCELLED".to_string());
-                }
+                if flag == 1 { return Err(format!("PAUSED:{}", current_loaded)); }
+                if flag == 2 { return Err("CANCELLED".to_string()); }
 
                 let limit_kb = state.download_limit.load(Ordering::Relaxed);
                 if limit_kb > 0 {
@@ -2644,9 +2650,7 @@ pub async fn vfs_download_file(
                         chunk.len() as f64 / (limit_kb * 1024) as f64,
                     );
                     let elapsed = start_time.elapsed();
-                    if elapsed < expected_time {
-                        tokio::time::sleep(expected_time - elapsed).await;
-                    }
+                    if elapsed < expected_time { tokio::time::sleep(expected_time - elapsed).await; }
                 }
                 start_time = tokio::time::Instant::now();
 

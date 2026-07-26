@@ -29,7 +29,7 @@ export default function App() {
   const [countdown, setCountdown] = useState(0);
 
   const [appVersion, setAppVersion] = useState("");
-  const [updateAvailable, setUpdateAvailable] = useState<{ version: string, body: string, url: string } | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState<{ version: string, body: string, url: string, isNewer: boolean } | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
 
   const [isMobile, setIsMobile] = useState(false);
@@ -95,37 +95,41 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    async function initVersion() {
-      try {
-        const ver = await getVersion();
-        setAppVersion(ver);
-        
-        const res = await fetch(`https://cdn.jsdelivr.net/gh/AgainsTurb/HeriHeriCloud/CHANGELOG.md?t=${Date.now()}`, {
-          cache: 'no-store'
-        });
-        if (!res.ok) return;
-        const text = await res.text();
-        
-        // Regex extracts the very first version number and everything up to the next "## ["
-        const match = text.match(/##\s*\[([^\]]+)\][^\n]*\n([\s\S]*?)(?=\n##\s*\[|$)/);
-        if (!match) return;
+  async function checkForUpdates(manualCheck = false) {
+    try {
+      const ver = await getVersion();
+      setAppVersion(ver);
+      
+      const res = await fetch(`https://raw.githubusercontent.com/AgainsTurb/HeriHeriCloud/main/CHANGELOG.md?t=${Date.now()}`, {
+        cache: 'no-store'
+      });
+      if (!res.ok) return;
+      const text = await res.text();
+      
+      const match = text.match(/##\s*\[([^\]]+)\][^\n]*\n([\s\S]*?)(?=\n##\s*\[|$)/);
+      if (!match) return;
 
-        const latestVer = match[1];
-        const changelogBody = match[2].trim();
-        
-        if (latestVer.localeCompare(ver, undefined, { numeric: true, sensitivity: 'base' }) > 0) {
-          setUpdateAvailable({
-            version: `v${latestVer}`,
-            body: changelogBody,
-            url: `https://github.com/AgainsTurb/HeriHeriCloud/releases/tag/v${latestVer}`
-          });
-        }
-      } catch (err) {
-        console.error("Version check failed:", err);
+      const latestVer = match[1];
+      const changelogBody = match[2].trim();
+      
+      const isNewer = latestVer.localeCompare(ver, undefined, { numeric: true, sensitivity: 'base' }) > 0;
+      
+      if (isNewer || manualCheck) {
+        setUpdateAvailable({
+          version: `v${latestVer}`,
+          body: changelogBody,
+          url: `https://github.com/AgainsTurb/HeriHeriCloud/releases/tag/v${latestVer}`,
+          isNewer
+        });
+        if (manualCheck) setShowUpdateModal(true);
       }
+    } catch (err) {
+      console.error("Version check failed:", err);
     }
-    initVersion();
+  }
+
+  useEffect(() => {
+    checkForUpdates(false); // Silent check on boot
   }, []);
 
   async function triggerSystemNotification(title: string, body: string, playSound: boolean) {
@@ -464,9 +468,9 @@ export default function App() {
   const AppLogo = (
     <div style={{...styles.logoContainer, marginBottom: isMobile ? 0 : "30px"}}>
       <h1 style={{...styles.logoText, fontSize: isMobile ? "16px" : "20px"}}>HERIHERI</h1>
-      <div style={{ ...styles.badge, position: "relative", cursor: "pointer" }} onClick={() => updateAvailable ? setShowUpdateModal(true) : alert(t("You are on the latest version!"))}>
+      <div style={{ ...styles.badge, position: "relative", cursor: "pointer" }} onClick={() => checkForUpdates(true)}>
         V{appVersion || "..."}
-        {updateAvailable && <div style={styles.redDot} />}
+        {updateAvailable?.isNewer && <div style={styles.redDot} />}
       </div>
     </div>
   );
@@ -620,7 +624,7 @@ export default function App() {
       {showUpdateModal && updateAvailable && (
         <div style={styles.modalOverlay} onClick={() => setShowUpdateModal(false)}>
           <div style={{...styles.modalBox, width: "480px"}} onClick={(e) => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>{t("Update Available")}</h3>
+            <h3 style={styles.modalTitle}>{updateAvailable.isNewer ? t("Update Available") : t("Version Info")}</h3>
             
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <div style={styles.inputLabel}>{t("Current Version")}: V{appVersion}</div>
@@ -639,19 +643,21 @@ export default function App() {
                 style={styles.secondaryButton} 
                 onClick={() => setShowUpdateModal(false)}
               >
-                {t("Cancel")}
+                {t("Close")}
               </button>
-              <button 
-                style={styles.primaryButton} 
-                onClick={async () => {
-                  await openBrowser(updateAvailable.url).catch(() => {
-                    window.open(updateAvailable.url, '_blank');
-                  });
-                  setShowUpdateModal(false);
-                }}
-              >
-                {t("Download Update")}
-              </button>
+              {updateAvailable.isNewer && (
+                <button 
+                  style={styles.primaryButton} 
+                  onClick={async () => {
+                    await openBrowser(updateAvailable.url).catch(() => {
+                      window.open(updateAvailable.url, '_blank');
+                    });
+                    setShowUpdateModal(false);
+                  }}
+                >
+                  {t("Download Update")}
+                </button>
+              )}
             </div>
           </div>
         </div>

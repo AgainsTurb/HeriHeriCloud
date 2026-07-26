@@ -430,7 +430,33 @@ async fn handle_dav_dispatch(
                 return StatusCode::FORBIDDEN.into_response();
             }
 
-            // Critical: Drop the VFS Lock before handing off to the stream engine!
+            if method.as_str() == "HEAD" {
+                let size = current_node.as_ref()
+                    .map(|n| n.size.parse::<u64>().unwrap_or_else(|_| parse_size_to_bytes(&n.size)))
+                    .unwrap_or(0);
+                
+                let ext = current_node.as_ref()
+                    .and_then(|n| n.name.split('.').last())
+                    .unwrap_or("")
+                    .to_lowercase();
+                
+                let content_type = match ext.as_str() {
+                    "mp4" => "video/mp4",
+                    "mkv" => "video/x-matroska",
+                    "webm" => "video/webm",
+                    _ => "application/octet-stream",
+                };
+
+                drop(vfs_guard);
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::ACCEPT_RANGES, "bytes")
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header(header::CONTENT_LENGTH, size.to_string())
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+            }
+
             drop(vfs_guard);
 
             // Hand off smoothly to the core high-performance streamer
@@ -561,7 +587,7 @@ async fn handle_stream(
                 urls.push(direct_url);
             } else {
                 let mut all_files = match downloader
-                    .get_lanzou_folder_links(&share_url, file_pwd.as_deref(), 5)
+                    .get_lanzou_folder_metadata(&share_url, file_pwd.as_deref())
                     .await
                 {
                     Ok(f) => f,
@@ -574,39 +600,25 @@ async fn handle_stream(
                 let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
                 
                 all_files.sort_by(|a, b| {
-                    let na = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let nb = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let na = a.get("name_all").and_then(|n| n.as_str()).unwrap_or_else(|| a.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+                    let nb = b.get("name_all").and_then(|n| n.as_str()).unwrap_or_else(|| b.get("name").and_then(|n| n.as_str()).unwrap_or(""));
 
                     let mut get_idx = |name: &str| -> u32 {
-                        // 1. Try to decrypt using the new cryptographic covert layout
-                        if let Some(idx) = decrypt_chunk_filename(name) {
-                            return idx;
-                        }
-                        // 2. Fallback to plaintext hex append pattern
-                        if let Some(caps) = re_covert.captures(name) {
-                            return u32::from_str_radix(&caps[1], 16).unwrap_or(0);
-                        }
-                        // 3. Fallback to old legacy part designator pattern
-                        if let Some(caps) = re_legacy.captures(name) {
-                            return caps[1].parse::<u32>().unwrap_or(0);
-                        }
+                        if let Some(idx) = decrypt_chunk_filename(name) { return idx; }
+                        if let Some(caps) = re_covert.captures(name) { return u32::from_str_radix(&caps[1], 16).unwrap_or(0); }
+                        if let Some(caps) = re_legacy.captures(name) { return caps[1].parse::<u32>().unwrap_or(0); }
                         0
                     };
-
                     get_idx(na).cmp(&get_idx(nb))
                 });
 
+                let parsed_share_url = reqwest::Url::parse(&share_url).unwrap();
+                let base_file_url = format!("{}://{}", parsed_share_url.scheme(), parsed_share_url.host_str().unwrap());
+
                 for file in all_files {
-                    let u = file
-                        .get("direct_url")
-                        .and_then(|u| u.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if u.is_empty() || u == "null" {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, "Chunk URL unresolved")
-                            .into_response();
-                    }
-                    urls.push(u);
+                    let id = file.get("id").and_then(|u| u.as_str()).unwrap_or("");
+                    if id.is_empty() { return (StatusCode::INTERNAL_SERVER_ERROR, "Chunk ID missing").into_response(); }
+                    urls.push(format!("{}/{}", base_file_url, id)); // Store Share URLs, not Direct URLs!
                 }
             }
 
@@ -721,11 +733,15 @@ async fn handle_stream(
             };
             Box::pin(stream)
         } else {
-            let mut active_urls = media.urls.clone();
+            let active_urls = media.urls.clone();
+            let downloader_stream = state_clone.downloader.lock().await.clone();
 
             let stream = async_stream::try_stream! {
                 let mut remaining_to_send = chunk_length;
                 let mut current_global_ptr = start_bytes;
+
+                // MINIMUM FIX: Use a HashMap to queue multiple background pre-resolve tasks
+                let mut pre_resolve_tasks: HashMap<usize, tokio::task::JoinHandle<Result<String, String>>> = HashMap::new();
 
                 while remaining_to_send > 0 {
                     let chunk_idx = current_global_ptr / CHUNK_SIZE;
@@ -733,78 +749,62 @@ async fn handle_stream(
 
                     let chunk_local_start = current_global_ptr % CHUNK_SIZE;
                     let chunk_local_end = std::cmp::min(CHUNK_SIZE - 1, chunk_local_start + remaining_to_send - 1);
-
                     let clamped_end = std::cmp::min(chunk_local_end, chunk_local_start + prefetch_clamp - 1);
+                    
+                    let chunk_share_url = &active_urls[chunk_idx];
                     let mut retry = 0;
+                    let mut direct_url = String::new();
 
                     loop {
-                        let direct_url = &active_urls[chunk_idx];
-                        let resp = req_client.get(direct_url)
+                        if direct_url.is_empty() {
+                            if let Some(task) = pre_resolve_tasks.remove(&chunk_idx) {
+                                direct_url = task.await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                            } else {
+                                direct_url = downloader_stream.get_lanzou_direct_link(chunk_share_url, None).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                            }
+                        }
+
+                        for offset in 1..=2 {
+                            let target_idx = chunk_idx + offset;
+                            if target_idx < active_urls.len() && !pre_resolve_tasks.contains_key(&target_idx) {
+                                let dl_clone = downloader_stream.clone();
+                                let next_share_url = active_urls[target_idx].clone();
+                                pre_resolve_tasks.insert(target_idx, tokio::spawn(async move {
+                                    dl_clone.get_lanzou_direct_link(&next_share_url, None).await
+                                }));
+                            }
+                        }
+
+                        let resp_res = req_client.get(&direct_url)
                             .header("Range", format!("bytes={}-{}", chunk_local_start, clamped_end))
                             .send()
-                            .await
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                            .await;
 
-                        if resp.status().is_success() {
-                            let full_chunk = resp.bytes().await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                            current_global_ptr += full_chunk.len() as usize;
-                            remaining_to_send -= full_chunk.len() as usize;
-                            yield full_chunk;
-                            break;
-                        } else {
-                            if retry > 0 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent CDN Error"))?; }
-                            retry += 1;
-
-                            println!("[PROXY] CDN Rejected Chunk Link (HTTP {}). Auto-refreshing cache...", resp.status());
-                            get_cache().lock().await.remove(&vfs_id);
-
-                            let (_, new_share_url, new_file_pwd, _) = resolve_lanzou_media(vfs_id, &state_clone)
-                                .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-                            let downloader = state_clone.downloader.lock().await.clone();
-                            let mut all_files = downloader.get_lanzou_folder_links(&new_share_url, new_file_pwd.as_deref(), 5)
-                                .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-                            let re_legacy = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
-                            let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
-                            
-                            all_files.sort_by(|a, b| {
-                                let na = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                                let nb = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
-
-                                let mut get_idx = |name: &str| -> u32 {
-                                    // 1. Try to decrypt using the new cryptographic covert layout
-                                    if let Some(idx) = decrypt_chunk_filename(name) {
-                                        return idx;
-                                    }
-                                    // 2. Fallback to plaintext hex append pattern
-                                    if let Some(caps) = re_covert.captures(name) {
-                                        return u32::from_str_radix(&caps[1], 16).unwrap_or(0);
-                                    }
-                                    // 3. Fallback to old legacy part designator pattern
-                                    if let Some(caps) = re_legacy.captures(name) {
-                                        return caps[1].parse::<u32>().unwrap_or(0);
-                                    }
-                                    0
-                                };
-
-                                get_idx(na).cmp(&get_idx(nb))
-                            });
-
-                            let mut new_urls = Vec::new();
-                            for file in all_files {
-                                new_urls.push(file.get("direct_url").and_then(|u| u.as_str()).unwrap_or("").to_string());
+                        match resp_res {
+                            Ok(resp) => {
+                                let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+                                
+                                if resp.status().is_success() && !ctype.contains("text/html") {
+                                    let full_chunk = resp.bytes().await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                                    current_global_ptr += full_chunk.len() as usize;
+                                    remaining_to_send -= full_chunk.len() as usize;
+                                    yield full_chunk;
+                                    break; // Success!
+                                } else {
+                                    println!("[PROXY] CDN Rejected Link (HTTP {} | {}). Retrying JIT...", resp.status(), ctype);
+                                    if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent CDN Error"))?; }
+                                    retry += 1;
+                                    
+                                    // Flush bad URL and abort ALL queued tasks to force a fresh resolve
+                                    direct_url = String::new();
+                                    for (_, task) in pre_resolve_tasks.drain() { task.abort(); }
+                                }
+                            },
+                            Err(e) => {
+                                println!("[PROXY] Network Error: {}", e);
+                                if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Network Error"))?; }
+                                retry += 1;
                             }
-                            active_urls = new_urls.clone();
-
-                            let new_entry = CachedMedia {
-                                chunks_str: chunks_str_clone.clone(),
-                                total_size,
-                                urls: new_urls,
-                                expires_at: Instant::now() + Duration::from_secs(300),
-                            };
-                            get_cache().lock().await.insert(vfs_id, new_entry);
-                            println!("[PROXY] Cache Refreshed. Resuming stream.");
                         }
                     }
                 }

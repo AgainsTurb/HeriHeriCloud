@@ -486,7 +486,7 @@ impl LanzouDownloader {
                 break;
             }
 
-            sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(2100)).await;
             pg += 1;
         }
 
@@ -551,5 +551,74 @@ impl LanzouDownloader {
         }
 
         Ok(results)
+    }
+
+    pub async fn get_lanzou_folder_metadata(
+        &self,
+        folder_url: &str,
+        password: Option<&str>,
+    ) -> Result<Vec<Value>, String> {
+        let resp = self.client.get(folder_url).send().await.map_err(|e| e.to_string())?;
+        let html_initial = resp.text().await.map_err(|e| e.to_string())?;
+        let html = self.solve_lanzou_challenge(&html_initial, folder_url).await?;
+
+        let fid_re = Regex::new(r"'fid'\s*:\s*(\d+)").unwrap();
+        let uid_re = Regex::new(r"'uid'\s*:\s*'(\d+)'").unwrap();
+        let puid_re = Regex::new(r"'puid'\s*:\s*'([^']+)'").unwrap();
+
+        let fid = fid_re.captures(&html).ok_or("Missing fid")?[1].to_string();
+        let uid = uid_re.captures(&html).ok_or("Missing uid")?[1].to_string();
+        let puid = puid_re.captures(&html).ok_or("Missing puid")?[1].to_string();
+
+        let script_block_re = Regex::new(r"(?s)function file\(\)(.*?)function more\(\)").unwrap();
+        let script = script_block_re.captures(&html).ok_or("Cannot locate file() function")?[1].to_string();
+
+        let t_var_re = Regex::new(r"'t'\s*:\s*(\w+)\s*[,\}]").unwrap();
+        let k_var_re = Regex::new(r"'k'\s*:\s*(\w+)\s*[,\}]").unwrap();
+
+        let t_var = t_var_re.captures(&script).ok_or("Cannot find t variable name")?[1].to_string();
+        let k_var = k_var_re.captures(&script).ok_or("Cannot find k variable name")?[1].to_string();
+
+        let t_val_re = Regex::new(&format!(r"var\s+{}\s*=\s*'([^']+)'", regex::escape(&t_var))).unwrap();
+        let k_val_re = Regex::new(&format!(r"var\s+{}\s*=\s*'([^']+)'", regex::escape(&k_var))).unwrap();
+
+        let t = t_val_re.captures(&html).ok_or("Cannot find t value")?[1].to_string();
+        let k = k_val_re.captures(&html).ok_or("Cannot find k value")?[1].to_string();
+
+        let mut all_files = Vec::new();
+        let mut pg = 1;
+        let parsed_url = Url::parse(folder_url).unwrap();
+
+        loop {
+            let mut post_data = HashMap::new();
+            post_data.insert("lx", "2".to_string());
+            post_data.insert("fid", fid.clone());
+            post_data.insert("uid", uid.clone());
+            post_data.insert("puid", puid.clone());
+            post_data.insert("pg", pg.to_string());
+            post_data.insert("rep", "0".to_string());
+            post_data.insert("t", t.clone());
+            post_data.insert("k", k.clone());
+            post_data.insert("up", "1".to_string());
+            post_data.insert("ls", "1".to_string());
+            post_data.insert("pwd", password.unwrap_or("").to_string());
+
+            let filemore_url = parsed_url.join(&format!("/filemoreajax.php?file={}", fid)).unwrap().to_string();
+
+            let resp = self.client.post(&filemore_url).headers(get_ajax_headers(folder_url)).form(&post_data).send().await.map_err(|e| e.to_string())?;
+
+            let data: Value = resp.json().await.map_err(|e| e.to_string())?;
+            if data.get("zt").and_then(|z| z.as_i64()) != Some(1) { break; }
+
+            if let Some(files) = data.get("text").and_then(|t| t.as_array()) {
+                all_files.extend(files.clone());
+                if files.len() < 50 { break; }
+            } else { break; }
+
+            sleep(Duration::from_millis(2100)).await;
+            pg += 1;
+        }
+
+        Ok(all_files)
     }
 }
