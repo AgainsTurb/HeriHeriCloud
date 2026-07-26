@@ -6,6 +6,8 @@ use axum::{
     routing::get,
     Router,
 };
+use axum::{Json, routing::post};
+use rust_embed::RustEmbed;
 use chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     ChaCha20Poly1305, Key, Nonce,
@@ -20,6 +22,10 @@ use tokio::sync::Mutex;
 
 // Updated to point to your new headless modules
 use crate::openwrt_lanzou::{AppState, SharePayload};
+
+#[derive(RustEmbed)]
+#[folder = "webui/"]
+struct WebUiAssets;
 
 const CHUNK_SIZE: usize = 100 * 1024 * 1024;
 const PREFETCH_CLAMP: usize = 2 * 1024 * 1024;
@@ -201,12 +207,17 @@ async fn fallback_logger(method: axum::http::Method, uri: axum::http::Uri) -> im
     (StatusCode::NOT_FOUND, "Not Found")
 }
 
-// MINIMUM FIX: Removed tauri::AppHandle completely
 pub async fn run_server(state: AppState) {
     let shared_state = Arc::new(state);
 
-    // MINIMUM FIX: Removed Tauri MCP extensions
     let app_router = Router::new()
+        // --- WEB UI & APIs ---
+        .route("/", get(serve_index))
+        .route("/api/status", get(api_status))
+        .route("/api/login", post(api_login))
+        .route("/api/sync", post(api_sync))
+        
+        // --- WEBDAV ROUTES ---
         .route("/stream/:vfs_id", get(handle_stream))
         .route("/dav", axum::routing::any(handle_dav_dispatch))
         .route("/dav/", axum::routing::any(handle_dav_dispatch))
@@ -218,11 +229,9 @@ pub async fn run_server(state: AppState) {
     let config = config_arc.lock().await.clone();
     let port = config.port;
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
-        .await
-        .unwrap();
-    println!("[PROXY] Local Video Streaming Proxy listening on port {}", port);
-    println!("[PROXY] WebDAV Mount available at http://127.0.0.1:{}/dav (User: {}, Pass: {})", port, config.username, config.password);
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+    println!("[PROXY] WebGUI available at http://127.0.0.1:{}", port);
+    println!("[PROXY] WebDAV Mount available at http://127.0.0.1:{}/dav", port);
 
     axum::serve(listener, app_router).await.unwrap();
 }
@@ -501,6 +510,51 @@ fn append_propfind_node(
     xml.push_str("      <D:status>HTTP/1.1 200 OK</D:status>\n");
     xml.push_str("    </D:propstat>\n");
     xml.push_str("  </D:response>\n");
+}
+
+// --- 1. Serve the embedded index.html ---
+async fn serve_index() -> impl IntoResponse {
+    let file = WebUiAssets::get("index.html").unwrap();
+    Response::builder()
+        .header("Content-Type", "text/html")
+        .body(axum::body::Body::from(file.data))
+        .unwrap()
+}
+
+// --- 2. Status API ---
+async fn api_status(AxumState(state): AxumState<Arc<AppState>>) -> impl IntoResponse {
+    let phone = state.current_phone.lock().await.clone();
+    let logged_in = !phone.is_empty();
+    
+    Json(serde_json::json!({
+        "logged_in": logged_in,
+        "phone": phone
+    }))
+}
+
+// --- 3. Login API ---
+#[derive(serde::Deserialize)]
+struct LoginReq { phone: String, password: String }
+
+async fn api_login(
+    AxumState(state): AxumState<Arc<AppState>>,
+    Json(payload): Json<LoginReq>,
+) -> impl IntoResponse {
+    let mut lanzou = state.lanzou.lock().await;
+    match lanzou.login(&payload.phone, &payload.password).await {
+        Ok(_) => {
+            *state.current_phone.lock().await = payload.phone;
+            (StatusCode::OK, "Success")
+        }
+        Err(_) => (StatusCode::UNAUTHORIZED, "Login Failed"),
+    }
+}
+
+// --- 4. Sync Pull API ---
+async fn api_sync(AxumState(state): AxumState<Arc<AppState>>) -> impl IntoResponse {
+    let _guard = state.sync_lock.lock().await;
+    let _ = crate::openwrt_lanzou::execute_sync_pull(&state).await;
+    (StatusCode::OK, "Sync Complete")
 }
 
 // ========================================================

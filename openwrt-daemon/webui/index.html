@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HeriHeri OpenWRT</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { margin: 0; display: flex; height: 100vh; width: 100vw; background-color: #f3f4f6; font-family: 'Inter', sans-serif; color: #111827; }
+        .sidebar { width: 260px; background: #ffffff; border-right: 1px solid #111827; display: flex; flex-direction: column; padding: 24px; box-sizing: border-box; }
+        .logo-text { margin: 0; font-size: 20px; font-weight: 900; letter-spacing: 1px; }
+        .badge { background: #111827; color: #ffffff; padding: 4px 8px; font-size: 11px; font-weight: 700; display: inline-block; margin-top: 8px; }
+        
+        .main-content { flex: 1; padding: 48px; overflow-y: auto; }
+        .card { background: #ffffff; padding: 32px; border: 2px solid #111827; box-shadow: 8px 8px 0px 0px rgba(17, 24, 39, 1); max-width: 400px; display: flex; flex-direction: column; gap: 16px; }
+        .card-title { margin: 0; font-size: 16px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; }
+        
+        .input-group { display: flex; flex-direction: column; gap: 8px; }
+        .input-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+        .input { padding: 10px 12px; border: 1px solid #111827; font-size: 13px; outline: none; border-radius: 0; }
+        
+        .btn-primary { background: #111827; color: #ffffff; padding: 12px; border: 1px solid #111827; font-size: 12px; font-weight: 700; text-transform: uppercase; cursor: pointer; letter-spacing: 1px; }
+        .btn-secondary { background: #ffffff; color: #111827; padding: 12px; border: 1px solid #111827; font-size: 12px; font-weight: 700; text-transform: uppercase; cursor: pointer; letter-spacing: 1px; }
+        .btn-primary:active, .btn-secondary:active { transform: translate(2px, 2px); }
+
+        .hidden { display: none !important; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .dot-red { background: #ef4444; }
+        .dot-green { background: #10b981; }
+    </style>
+</head>
+<body>
+
+    <aside class="sidebar">
+        <div>
+            <h1 class="logo-text">HERIHERI</h1>
+            <div class="badge">OPENWRT DAEMON</div>
+        </div>
+        <div style="margin-top: auto; border-top: 1px solid #e5e7eb; padding-top: 16px;">
+            <div class="input-label">Status</div>
+            <div id="sidebar-status" style="font-size: 12px; font-weight: 700; margin-top: 4px;">
+                <span class="status-dot dot-red" id="status-dot"></span> <span id="status-text">DISCONNECTED</span>
+            </div>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <!-- LOGIN CARD -->
+        <div id="login-view" class="card">
+            <h3 class="card-title">Login to Lanzou</h3>
+            <div class="input-group">
+                <label class="input-label">Phone Number</label>
+                <input type="text" id="phone" class="input" placeholder="Enter phone">
+            </div>
+            <div class="input-group">
+                <label class="input-label">Password</label>
+                <input type="password" id="password" class="input" placeholder="Enter password">
+            </div>
+            <button class="btn-primary" onclick="handleLogin()">Sign In</button>
+            <div id="login-error" style="color: #ef4444; font-size: 12px; font-weight: 700;" class="hidden"></div>
+        </div>
+
+        <!-- DASHBOARD CARD -->
+        <div id="dashboard-view" class="card hidden">
+            <h3 class="card-title">Daemon Dashboard</h3>
+            <div class="input-group">
+                <label class="input-label">Account</label>
+                <div style="font-size: 14px; font-weight: 700;" id="dash-phone">---</div>
+            </div>
+            <div class="input-group">
+                <label class="input-label">WebDAV Server</label>
+                <div style="font-size: 14px; font-weight: 700;">Running on Port 8888</div>
+            </div>
+            <button class="btn-secondary" style="margin-top: 16px;" onclick="handleSync()" id="sync-btn">Force Sync Pull</button>
+        </div>
+    </main>
+
+    <script>
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                if (data.logged_in) {
+                    document.getElementById('login-view').classList.add('hidden');
+                    document.getElementById('dashboard-view').classList.remove('hidden');
+                    document.getElementById('status-text').innerText = "ONLINE";
+                    document.getElementById('status-dot').className = "status-dot dot-green";
+                    document.getElementById('dash-phone').innerText = data.phone;
+                } else {
+                    document.getElementById('login-view').classList.remove('hidden');
+                    document.getElementById('dashboard-view').classList.add('hidden');
+                }
+            } catch (e) {
+                console.error("Daemon offline");
+            }
+        }
+
+        async function handleLogin() {
+            const phone = document.getElementById('phone').value;
+            const password = document.getElementById('password').value;
+            const errDiv = document.getElementById('login-error');
+            
+            errDiv.classList.add('hidden');
+            document.querySelector('#login-view .btn-primary').innerText = "CONNECTING...";
+
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ phone, password })
+            });
+
+            if (res.ok) {
+                fetchStatus();
+            } else {
+                errDiv.innerText = "Login failed. Check credentials or WAF.";
+                errDiv.classList.remove('hidden');
+            }
+            document.querySelector('#login-view .btn-primary').innerText = "SIGN IN";
+        }
+
+        async function handleSync() {
+            const btn = document.getElementById('sync-btn');
+            btn.innerText = "SYNCING...";
+            await fetch('/api/sync', { method: 'POST' });
+            btn.innerText = "FORCE SYNC PULL";
+            alert("Sync Complete!");
+        }
+
+        // Init
+        fetchStatus();
+    </script>
+</body>
+</html>
