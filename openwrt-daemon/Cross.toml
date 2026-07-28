@@ -1,5 +1,0 @@
-[build.env]
-passthrough = [
-    "HERIHERI_SECRET_KEY",
-    "CHUNKS_NAMES_KEY"
-]

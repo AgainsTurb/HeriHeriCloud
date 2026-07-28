@@ -222,6 +222,13 @@ jobs:
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
+      - name: Inject Secret Keys into Cargo Config
+        run: |
+          mkdir -p .cargo
+          echo "[env]" > .cargo/config.toml
+          echo 'HERIHERI_SECRET_KEY = "${{ secrets.HERIHERI_SECRET_KEY }}"' >> .cargo/config.toml
+          echo 'CHUNKS_NAMES_KEY = "${{ secrets.CHUNKS_NAMES_KEY }}"' >> .cargo/config.toml
+
       - name: Build OpenWRT Daemon
         env:
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
@@ -234,7 +241,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Rename the binary to include the architecture so they don't overwrite each other!
           mv target/${{ matrix.target }}/release/heriheri-openwrt heriheri-openwrt-${{ matrix.target }}
           gh release upload ${{ github.ref_name }} heriheri-openwrt-${{ matrix.target }}
 
