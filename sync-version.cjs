@@ -35,10 +35,28 @@ if (fs.existsSync(cargoPath)) {
   }
 }
 
+// 3.5 Update openwrt-daemon/Cargo.toml
+const openwrtCargoPath = path.join(__dirname, 'openwrt-daemon', 'Cargo.toml');
+if (fs.existsSync(openwrtCargoPath)) {
+  let cargoContent = fs.readFileSync(openwrtCargoPath, 'utf8');
+  // Replaces the first instance of version = "X.Y.Z" (under [package])
+  cargoContent = cargoContent.replace(/^version\s*=\s*"[^"]*"/m, `version = "${version}"`);
+  fs.writeFileSync(openwrtCargoPath, cargoContent, 'utf8');
+  console.log('  ✅ Updated openwrt-daemon/Cargo.toml');
+  
+  // Sync Cargo.lock for OpenWRT
+  try {
+    execSync('cargo update -p heriheri-openwrt', { cwd: path.join(__dirname, 'openwrt-daemon'), stdio: 'ignore' });
+    console.log('  ✅ Synced openwrt-daemon/Cargo.lock');
+  } catch (e) {
+    console.warn('  ⚠️ Could not update openwrt-daemon/Cargo.lock automatically.');
+  }
+}
+
 // 4. Force Git to stage these changes so they get bundled into the automatic version commit
 try {
   // Added Cargo.lock to the git add command
-  execSync('git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock');
+  execSync('git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock openwrt-daemon/Cargo.toml openwrt-daemon/Cargo.lock');
   console.log('  ✅ Staged updated files for Git commit\n');
 } catch (e) {
   console.error('  ❌ Failed to automatically stage files in Git:', e.message);

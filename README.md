@@ -4,7 +4,7 @@
 <a name="chinese-version"></a>
 # HeriHeriCloud
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![Tauri](https://img.shields.io/badge/Tauri-v2-FFC131?logo=tauri&logoColor=white)](https://tauri.app/) [![React](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=black)](https://react.dev/) [![Platform](https://img.shields.io/badge/Platform-Windows_|_macOS_|_Linux_|_Android_|_iOS_-blue?logo=github)](#)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![Tauri](https://img.shields.io/badge/Tauri-v2-FFC131?logo=tauri&logoColor=white)](https://tauri.app/) [![React](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=black)](https://react.dev/) [![Platform](https://img.shields.io/badge/Platform-Windows_|_macOS_|_Linux_|_Android_|_iOS_|_OpenWRT-blue?logo=github)](#)
 
 HeriHeriCloud 是一个跨平台的云盘客户端解决方案。本项目以蓝奏云的无限存储空间和不限速带宽为底层基础设施，新增WebDAV挂载、AI智能体接入(MCP)与其他高级功能，旨在为用户提供现代化、高性能的文件管理与分享体验。
 
@@ -23,6 +23,7 @@ HeriHeriCloud 是一个跨平台的云盘客户端解决方案。本项目以蓝
 * **跨平台架构**：基于 Tauri v2 + TypeScript + React 构建，确保在提供原生级性能和极低内存占用的同时，实现全平台代码复用。
 * **原生 WebDAV 服务**：内置轻量级 WebDAV 代理，将深层目录结构和文件直接映射为标准 WebDAV 协议，支持第三方播放器串流与系统级挂载。
 * **AI 智能体支持 (MCP)**：内置 Model Context Protocol (MCP) 双模式服务器，无缝接入 Cursor、OpenCode 等各大主流 AI 智能体，允许 AI 在安全沙盒内自主检索、上传、下载与管理云端文件。
+* **OpenWRT 路由器支持**：提供超轻量的无头（Headless）守护进程，支持在多种架构（ARM/MIPS/x86）的 OpenWRT 路由器上 24/7 常驻运行，配合内置的单页 WebUI 配置面板，轻松将路由器打造成局域网 WebDAV 媒体流转中心。
 * **自定义虚拟文件系统 (VFS)**：突破底层云盘的目录层级和文件类型限制，在本地构建并维护完整的树状目录结构。
 * **高级媒体与文档预览**：内置视频流媒体实时缓冲代理，并支持文本、代码、图片及 PDF 文档的原生窗口预览。
 * **极速并发传输**：支持自定义并发数与速度限制，充分利用带宽上限，实现大文件的上传下载以及断点续传。
@@ -201,7 +202,7 @@ git push origin vx.x.x
 <a name="english-version"></a>
 # HeriHeriCloud
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![Tauri](https://img.shields.io/badge/Tauri-v2-FFC131?logo=tauri&logoColor=white)](https://tauri.app/) [![React](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=black)](https://react.dev/) [![Platform](https://img.shields.io/badge/Platform-Windows_|_macOS_|_Linux_|_Android_|_iOS_-blue?logo=github)](#)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![Tauri](https://img.shields.io/badge/Tauri-v2-FFC131?logo=tauri&logoColor=white)](https://tauri.app/) [![React](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=black)](https://react.dev/) [![Platform](https://img.shields.io/badge/Platform-Windows_|_macOS_|_Linux_|_Android_|_iOS_|_OpenWRT-blue?logo=github)](#)
 
 HeriHeriCloud is a cross-platform cloud storage client solution. Built upon the infrastructure of Lanzou Cloud—leveraging its unlimited storage and unthrottled bandwidth—it incorporates WebDAV mounting, AI agent integration (MCP), and other advanced features to provide users with a modern, high-performance file management and sharing experience.
 
@@ -219,6 +220,7 @@ This project natively supports Large Language Model agents (like OpenCode, CC Sw
 
 * **Cross-Platform Architecture**: Built with Tauri v2 + TypeScript + React, ensuring native-level performance and exceptionally low memory usage while achieving code reuse across all platforms.
 * **Native WebDAV Service**: Features a built-in lightweight WebDAV proxy that maps deep directory structures and files into the standard WebDAV protocol, supporting third-party player streaming and system-level mounting.
+* **OpenWRT Router Support**: Provides an ultra-lightweight headless daemon designed to run 24/7 on multi-architecture (ARM/MIPS/x86) OpenWRT routers. It includes a built-in single-page WebUI to effortlessly transform your router into a local network WebDAV media streaming hub.
 * **AI Agent Support (MCP)**: Features a built-in Model Context Protocol (MCP) dual-mode server, seamlessly connecting with major AI agents like Cursor and OpenCode. This allows AI to autonomously search, upload, download, and manage your cloud assets within a secure sandbox.
 * **Virtual File System (VFS)**: Overcomes the directory depth and file type restrictions of the underlying cloud drive by building and maintaining a complete, local tree-based directory structure.
 * **Advanced Media & Document Preview**: Includes a real-time buffering proxy for video streaming, along with native window previewers for text, code, images, and PDF documents.
