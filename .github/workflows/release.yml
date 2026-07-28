@@ -219,18 +219,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Inject Secret Keys into Cargo Config
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Inject Secret Keys and Map Mipsel Image
         run: |
           mkdir -p .cargo
           echo "[env]" > .cargo/config.toml
           echo 'HERIHERI_SECRET_KEY = "${{ secrets.HERIHERI_SECRET_KEY }}"' >> .cargo/config.toml
           echo 'CHUNKS_NAMES_KEY = "${{ secrets.CHUNKS_NAMES_KEY }}"' >> .cargo/config.toml
+          
+          echo '[target.mipsel-unknown-linux-musl]' > Cross.toml
+          echo 'image = "messense/rust-musl-cross:mipsel-musl"' >> Cross.toml
 
       - name: Build OpenWRT Daemon
-        uses: messense/rust-musl-cross@v1
-        with:
-          target: ${{ matrix.target }}
-          args: "--release --manifest-path openwrt-daemon/Cargo.toml"
+        run: |
+          cd openwrt-daemon
+          cross build --target ${{ matrix.target }} --release
 
       - name: Rename and Upload Binary
         env:
