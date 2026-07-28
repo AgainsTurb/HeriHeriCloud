@@ -53,8 +53,25 @@ async fn main() {
     // 5. Create the VFS Tree in RAM
     // Note: OpenWRT's /tmp directory is mounted as RAMfs (tmpfs). 
     // Storing the DB here ensures we never burn out the router's fragile flash memory.
-    let tree_path = std::path::PathBuf::from("/tmp/heriheri_tree.txt");
-    let vfs_tree = VfsTree::new(root_id, deeper_id, tree_path);
+    let file_name = format!("heriheri_tree_{}.txt", phone);
+    let tree_path = std::path::PathBuf::from(format!("/tmp/{}", file_name));
+    
+    let vfs_tree = match VfsTree::load_local(tree_path.clone()) {
+        Ok(mut tree) => {
+            if tree.deeperdir_lanzou_id.is_empty() {
+                tree.deeperdir_lanzou_id = deeper_id;
+                let _ = tree.save_local();
+            }
+            println!("[VFS] Loaded existing local tree from RAM (Timestamp: {})", tree.last_modified);
+            tree
+        }
+        Err(_) => {
+            println!("[VFS] No local tree found in RAM. Creating fresh VFS...");
+            let tree = VfsTree::new(root_id, deeper_id, tree_path);
+            let _ = tree.save_local();
+            tree
+        }
+    };
 
     // 6. Build the Application State
     let state = AppState {
