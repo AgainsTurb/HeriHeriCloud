@@ -575,7 +575,8 @@ async fn api_status(AxumState(state): AxumState<Arc<AppState>>) -> impl IntoResp
     
     Json(serde_json::json!({
         "logged_in": logged_in,
-        "phone": phone
+        "phone": phone,
+        "version": env!("CARGO_PKG_VERSION")
     }))
 }
 

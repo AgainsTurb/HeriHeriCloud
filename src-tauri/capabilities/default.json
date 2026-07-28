@@ -22,6 +22,10 @@
     "fs:default",
     "fs:allow-cache-write",
     "fs:allow-download-write",
-    "fs:allow-download-read"
+    "fs:allow-download-read",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [{ "open": "^https://github.com/AgainsTurb/HeriHeriCloud/.*" }]
+    }
   ]
 }

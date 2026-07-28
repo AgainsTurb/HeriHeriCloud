@@ -638,6 +638,20 @@ export default function App() {
               </div>
             </div>
 
+            {updateAvailable.isNewer && (
+              <div style={{ marginTop: "8px", fontSize: "11px", fontWeight: "700" }}>
+                <span style={{ color: "#4b5563" }}>{t("Direct Link")}: </span>
+                <a 
+                  href={updateAvailable.url} 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  style={{ color: "#3b82f6", wordBreak: "break-all" }}
+                >
+                  {updateAvailable.url}
+                </a>
+              </div>
+            )}
+
             <div style={styles.modalActions}>
               <button 
                 style={styles.secondaryButton} 

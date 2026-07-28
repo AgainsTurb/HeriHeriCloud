@@ -28,13 +28,22 @@
         .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
         .dot-red { background: #ef4444; }
         .dot-green { background: #10b981; }
+
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(255, 255, 255, 0.9); display: flex; justify-content: center; align-items: center; z-index: 999; }
+        .modal-box { background: #ffffff; padding: 32px; border: 2px solid #111827; box-shadow: 8px 8px 0px 0px rgba(17, 24, 39, 1); width: 340px; display: flex; flex-direction: column; gap: 16px; }
     </style>
 </head>
 <body>
 
     <aside class="sidebar">
         <div>
-            <h1 class="logo-text">HERIHERI</h1>
+            <div style="display: flex; align-items: baseline; gap: 10px;">
+                <h1 class="logo-text">HERIHERI</h1>
+                <div style="position: relative; cursor: pointer;" onclick="document.getElementById('update-modal').classList.remove('hidden')">
+                    <span style="font-size: 12px; font-weight: 900; color: #4b5563;" id="app-version">V...</span>
+                    <div id="update-dot" class="hidden" style="position: absolute; top: -2px; right: -6px; width: 6px; height: 6px; background-color: #ef4444; border-radius: 50%;"></div>
+                </div>
+            </div>
             <div class="badge">OPENWRT DAEMON</div>
             <div>
                 <button class="btn-lang" onclick="toggleLanguage()" id="lang-toggle">中文</button>
@@ -98,6 +107,26 @@
         </div>
     </main>
 
+    <!-- UPDATE MODAL -->
+    <div id="update-modal" class="modal-overlay hidden" onclick="document.getElementById('update-modal').classList.add('hidden')">
+        <div class="modal-box" onclick="event.stopPropagation()">
+            <h3 class="card-title" data-i18n="versionInfo">Version Info</h3>
+            
+            <div style="font-size: 13px; font-weight: 700; color: #111827; line-height: 1.6;" id="update-body">
+                Checking version...
+            </div>
+
+            <div style="margin-top: 8px; font-size: 11px; font-weight: 700;">
+                <span style="color: #4b5563;" data-i18n="directLink">Direct Link:</span> 
+                <a href="https://github.com/AgainsTurb/HeriHeriCloud/releases" target="_blank" style="color: #3b82f6; word-break: break-all;">
+                    https://github.com/AgainsTurb/HeriHeriCloud/releases
+                </a>
+            </div>
+
+            <button class="btn-secondary" style="margin-top: 8px; width: 100%;" onclick="document.getElementById('update-modal').classList.add('hidden')" data-i18n="close">Close</button>
+        </div>
+    </div>
+
     <script>
         const translations = {
             en: {
@@ -124,7 +153,10 @@
                 webdavPass: "WebDAV Password",
                 webdavPort: "WebDAV Port (Requires Restart)",
                 saveConfig: "Save Config",
-                configSaved: "Config Saved!"
+                configSaved: "Config Saved!",
+                versionInfo: "Version Info",
+                directLink: "Direct Link:",
+                close: "Close"
             },
             zh: {
                 statusLabel: "状态",
@@ -150,7 +182,10 @@
                 webdavPass: "WebDAV 密码",
                 webdavPort: "WebDAV 端口 (需重启生效)",
                 saveConfig: "保存配置",
-                configSaved: "配置已保存！"
+                configSaved: "配置已保存！",
+                versionInfo: "版本信息",
+                directLink: "下载链接:",
+                close: "关闭"
             }
         };
 
@@ -187,11 +222,41 @@
             setLanguage(currentLang === 'en' ? 'zh' : 'en');
         }
 
+        async function checkForUpdates(currentVersion) {
+            try {
+                const res = await fetch(`https://raw.githubusercontent.com/AgainsTurb/HeriHeriCloud/main/CHANGELOG.md?t=${Date.now()}`, { cache: 'no-store' });
+                if (!res.ok) return;
+                const text = await res.text();
+                const match = text.match(/##\s*\[([^\]]+)\]/);
+                if (!match) return;
+                
+                const latestVer = match[1];
+                const isNewer = latestVer.localeCompare(currentVersion, undefined, { numeric: true, sensitivity: 'base' }) > 0;
+                
+                const bodyEl = document.getElementById('update-body');
+                if (isNewer) {
+                    document.getElementById('update-dot').classList.remove('hidden');
+                    bodyEl.innerHTML = `<span style="color: #ef4444">New Version: V${latestVer}</span><br><span style="color: #4b5563">Current: V${currentVersion}</span>`;
+                } else {
+                    bodyEl.innerHTML = `Up to date: V${currentVersion}`;
+                }
+            } catch (err) {
+                console.error("Version check failed", err);
+                document.getElementById('update-body').innerText = `V${currentVersion}`;
+            }
+        }
+
         async function fetchStatus() {
             try {
                 const res = await fetch('/api/status');
                 const data = await res.json();
                 
+                // Inject Version Data
+                if (data.version) {
+                    document.getElementById('app-version').innerText = `V${data.version}`;
+                    checkForUpdates(data.version);
+                }
+
                 const statusText = document.getElementById('status-text');
                 if (data.logged_in) {
                     document.getElementById('login-view').classList.add('hidden');
