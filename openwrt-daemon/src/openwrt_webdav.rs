@@ -620,14 +620,16 @@ async fn api_logout(AxumState(state): AxumState<Arc<AppState>>) -> impl IntoResp
 
 // --- 6. WebDAV Config APIs ---
 async fn api_get_config() -> impl IntoResponse {
-    let config = get_config().lock().await.clone();
+    let config_arc = get_config();
+    let config = config_arc.lock().await.clone();
     Json(config)
 }
 
 async fn api_set_config(Json(payload): Json<WebdavConfig>) -> impl IntoResponse {
     let mut restart_needed = false;
     {
-        let mut config = get_config().lock().await;
+        let config_arc = get_config();
+        let mut config = config_arc.lock().await;
         config.username = payload.username.clone();
         config.password = payload.password.clone();
         
