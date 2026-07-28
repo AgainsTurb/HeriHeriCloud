@@ -4,15 +4,12 @@ version = "1.2.1"
 edition = "2021"
 
 [dependencies]
-# Async Runtime & Web Server
 tokio = { version = "1.35", features = ["full"] }
 axum = "0.7"
 bytes = "1.0"
 async-stream = "0.3"
 futures = "0.3.32"
 futures-util = "0.3"
-
-# Networking
 reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "cookies", "json", "multipart", "gzip", "brotli", "deflate", "stream", "blocking"] }
 mime_guess = "2.0"
 chacha20poly1305 = "0.10.1"

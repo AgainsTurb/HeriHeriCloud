@@ -21,7 +21,8 @@
         
         .btn-primary { background: #111827; color: #ffffff; padding: 12px; border: 1px solid #111827; font-size: 12px; font-weight: 700; text-transform: uppercase; cursor: pointer; letter-spacing: 1px; }
         .btn-secondary { background: #ffffff; color: #111827; padding: 12px; border: 1px solid #111827; font-size: 12px; font-weight: 700; text-transform: uppercase; cursor: pointer; letter-spacing: 1px; }
-        .btn-primary:active, .btn-secondary:active { transform: translate(2px, 2px); }
+        .btn-lang { background: #ffffff; color: #111827; border: 1px solid #111827; padding: 4px 8px; font-size: 10px; font-weight: 700; cursor: pointer; text-transform: uppercase; margin-top: 12px; align-self: flex-start; }
+        .btn-primary:active, .btn-secondary:active, .btn-lang:active { transform: translate(2px, 2px); }
 
         .hidden { display: none !important; }
         .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
@@ -35,11 +36,14 @@
         <div>
             <h1 class="logo-text">HERIHERI</h1>
             <div class="badge">OPENWRT DAEMON</div>
+            <div>
+                <button class="btn-lang" onclick="toggleLanguage()" id="lang-toggle">中文</button>
+            </div>
         </div>
         <div style="margin-top: auto; border-top: 1px solid #e5e7eb; padding-top: 16px;">
-            <div class="input-label">Status</div>
+            <div class="input-label" data-i18n="statusLabel">Status</div>
             <div id="sidebar-status" style="font-size: 12px; font-weight: 700; margin-top: 4px;">
-                <span class="status-dot dot-red" id="status-dot"></span> <span id="status-text">DISCONNECTED</span>
+                <span class="status-dot dot-red" id="status-dot"></span> <span id="status-text" data-state="offline">DISCONNECTED</span>
             </div>
         </div>
     </aside>
@@ -47,49 +51,130 @@
     <main class="main-content">
         <!-- LOGIN CARD -->
         <div id="login-view" class="card">
-            <h3 class="card-title">Login to Lanzou</h3>
+            <h3 class="card-title" data-i18n="loginTitle">Login to Lanzou</h3>
             <div class="input-group">
-                <label class="input-label">Phone Number</label>
-                <input type="text" id="phone" class="input" placeholder="Enter phone">
+                <label class="input-label" data-i18n="phoneLabel">Phone Number</label>
+                <input type="text" id="phone" class="input" data-i18n-ph="phonePlaceholder" placeholder="Enter phone">
             </div>
             <div class="input-group">
-                <label class="input-label">Password</label>
-                <input type="password" id="password" class="input" placeholder="Enter password">
+                <label class="input-label" data-i18n="passLabel">Password</label>
+                <input type="password" id="password" class="input" data-i18n-ph="passPlaceholder" placeholder="Enter password">
             </div>
-            <button class="btn-primary" onclick="handleLogin()">Sign In</button>
+            <button class="btn-primary" onclick="handleLogin()" id="login-btn" data-i18n="signIn">Sign In</button>
             <div id="login-error" style="color: #ef4444; font-size: 12px; font-weight: 700;" class="hidden"></div>
         </div>
 
         <!-- DASHBOARD CARD -->
         <div id="dashboard-view" class="card hidden">
-            <h3 class="card-title">Daemon Dashboard</h3>
+            <h3 class="card-title" data-i18n="dashTitle">Daemon Dashboard</h3>
             <div class="input-group">
-                <label class="input-label">Account</label>
+                <label class="input-label" data-i18n="accountLabel">Account</label>
                 <div style="font-size: 14px; font-weight: 700;" id="dash-phone">---</div>
             </div>
             <div class="input-group">
-                <label class="input-label">WebDAV Server</label>
-                <div style="font-size: 14px; font-weight: 700;">Running on Port 8888</div>
+                <label class="input-label" data-i18n="webdavLabel">WebDAV Server</label>
+                <div style="font-size: 14px; font-weight: 700;" data-i18n="webdavStatus">Running on Port 8888</div>
             </div>
-            <button class="btn-secondary" style="margin-top: 16px;" onclick="handleSync()" id="sync-btn">Force Sync Pull</button>
+            <button class="btn-secondary" style="margin-top: 16px;" onclick="handleSync()" id="sync-btn" data-i18n="forceSync">Force Sync Pull</button>
         </div>
     </main>
 
     <script>
+        const translations = {
+            en: {
+                statusLabel: "Status",
+                statusOnline: "ONLINE",
+                statusOffline: "DISCONNECTED",
+                loginTitle: "Login to Lanzou",
+                phoneLabel: "Phone Number",
+                phonePlaceholder: "Enter phone",
+                passLabel: "Password",
+                passPlaceholder: "Enter password",
+                signIn: "Sign In",
+                connecting: "CONNECTING...",
+                dashTitle: "Daemon Dashboard",
+                accountLabel: "Account",
+                webdavLabel: "WebDAV Server",
+                webdavStatus: "Running on Port 8888",
+                forceSync: "Force Sync Pull",
+                syncing: "SYNCING...",
+                syncComplete: "Sync Complete!",
+                loginError: "Login failed. Check credentials or WAF."
+            },
+            zh: {
+                statusLabel: "状态",
+                statusOnline: "已连接",
+                statusOffline: "未连接",
+                loginTitle: "登录蓝奏云",
+                phoneLabel: "手机号码",
+                phonePlaceholder: "请输入手机号",
+                passLabel: "密码",
+                passPlaceholder: "请输入密码",
+                signIn: "登录",
+                connecting: "连接中...",
+                dashTitle: "服务仪表盘",
+                accountLabel: "当前账号",
+                webdavLabel: "WebDAV 服务",
+                webdavStatus: "运行于端口 8888",
+                forceSync: "强制同步拉取",
+                syncing: "同步中...",
+                syncComplete: "同步完成！",
+                loginError: "登录失败，请检查账号密码或WAF。"
+            }
+        };
+
+        let currentLang = localStorage.getItem('heri_lang') || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+
+        function setLanguage(lang) {
+            currentLang = lang;
+            localStorage.setItem('heri_lang', lang);
+            document.getElementById('lang-toggle').innerText = lang === 'en' ? '中文' : 'EN';
+            
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (translations[currentLang][key]) {
+                    el.innerText = translations[currentLang][key];
+                }
+            });
+
+            document.querySelectorAll('[data-i18n-ph]').forEach(el => {
+                const key = el.getAttribute('data-i18n-ph');
+                if (translations[currentLang][key]) {
+                    el.placeholder = translations[currentLang][key];
+                }
+            });
+
+            const statusText = document.getElementById('status-text');
+            if (statusText.dataset.state === 'online') {
+                statusText.innerText = translations[currentLang].statusOnline;
+            } else {
+                statusText.innerText = translations[currentLang].statusOffline;
+            }
+        }
+
+        function toggleLanguage() {
+            setLanguage(currentLang === 'en' ? 'zh' : 'en');
+        }
+
         async function fetchStatus() {
             try {
                 const res = await fetch('/api/status');
                 const data = await res.json();
                 
+                const statusText = document.getElementById('status-text');
                 if (data.logged_in) {
                     document.getElementById('login-view').classList.add('hidden');
                     document.getElementById('dashboard-view').classList.remove('hidden');
-                    document.getElementById('status-text').innerText = "ONLINE";
+                    statusText.dataset.state = "online";
+                    statusText.innerText = translations[currentLang].statusOnline;
                     document.getElementById('status-dot').className = "status-dot dot-green";
                     document.getElementById('dash-phone').innerText = data.phone;
                 } else {
                     document.getElementById('login-view').classList.remove('hidden');
                     document.getElementById('dashboard-view').classList.add('hidden');
+                    statusText.dataset.state = "offline";
+                    statusText.innerText = translations[currentLang].statusOffline;
+                    document.getElementById('status-dot').className = "status-dot dot-red";
                 }
             } catch (e) {
                 console.error("Daemon offline");
@@ -100,34 +185,41 @@
             const phone = document.getElementById('phone').value;
             const password = document.getElementById('password').value;
             const errDiv = document.getElementById('login-error');
+            const loginBtn = document.getElementById('login-btn');
             
             errDiv.classList.add('hidden');
-            document.querySelector('#login-view .btn-primary').innerText = "CONNECTING...";
+            loginBtn.innerText = translations[currentLang].connecting;
 
-            const res = await fetch('/api/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ phone, password })
-            });
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone, password })
+                });
 
-            if (res.ok) {
-                fetchStatus();
-            } else {
-                errDiv.innerText = "Login failed. Check credentials or WAF.";
+                if (res.ok) {
+                    fetchStatus();
+                } else {
+                    errDiv.innerText = translations[currentLang].loginError;
+                    errDiv.classList.remove('hidden');
+                }
+            } catch (e) {
+                errDiv.innerText = translations[currentLang].loginError;
                 errDiv.classList.remove('hidden');
             }
-            document.querySelector('#login-view .btn-primary').innerText = "SIGN IN";
+            loginBtn.innerText = translations[currentLang].signIn;
         }
 
         async function handleSync() {
             const btn = document.getElementById('sync-btn');
-            btn.innerText = "SYNCING...";
+            btn.innerText = translations[currentLang].syncing;
             await fetch('/api/sync', { method: 'POST' });
-            btn.innerText = "FORCE SYNC PULL";
-            alert("Sync Complete!");
+            btn.innerText = translations[currentLang].forceSync;
+            alert(translations[currentLang].syncComplete);
         }
 
         // Init
+        setLanguage(currentLang);
         fetchStatus();
     </script>
 </body>
