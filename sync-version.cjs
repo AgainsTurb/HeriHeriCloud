@@ -56,7 +56,7 @@ if (fs.existsSync(openwrtCargoPath)) {
 // 4. Force Git to stage these changes so they get bundled into the automatic version commit
 try {
   // Added Cargo.lock to the git add command
-  execSync('git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock openwrt-daemon/Cargo.toml openwrt-daemon/Cargo.lock');
+  execSync('git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock openwrt-daemon/Cargo.toml');
   console.log('  ✅ Staged updated files for Git commit\n');
 } catch (e) {
   console.error('  ❌ Failed to automatically stage files in Git:', e.message);
