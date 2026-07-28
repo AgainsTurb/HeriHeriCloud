@@ -67,15 +67,34 @@
         <!-- DASHBOARD CARD -->
         <div id="dashboard-view" class="card hidden">
             <h3 class="card-title" data-i18n="dashTitle">Daemon Dashboard</h3>
+            
+            <div class="input-group" style="flex-direction: row; justify-content: space-between; align-items: center;">
+                <div>
+                    <label class="input-label" data-i18n="accountLabel">Account</label>
+                    <div style="font-size: 14px; font-weight: 700;" id="dash-phone">---</div>
+                </div>
+                <button class="btn-secondary" style="padding: 6px 12px; font-size: 10px;" onclick="handleLogout()" data-i18n="logout">Logout</button>
+            </div>
+            
+            <hr style="border: none; border-top: 1px solid #e5e7eb; width: 100%; margin: 4px 0;" />
+            
             <div class="input-group">
-                <label class="input-label" data-i18n="accountLabel">Account</label>
-                <div style="font-size: 14px; font-weight: 700;" id="dash-phone">---</div>
+                <label class="input-label" data-i18n="webdavUser">WebDAV Username</label>
+                <input type="text" id="dav-user" class="input">
             </div>
             <div class="input-group">
-                <label class="input-label" data-i18n="webdavLabel">WebDAV Server</label>
-                <div style="font-size: 14px; font-weight: 700;" data-i18n="webdavStatus">Running on Port 8888</div>
+                <label class="input-label" data-i18n="webdavPass">WebDAV Password</label>
+                <input type="text" id="dav-pass" class="input">
             </div>
-            <button class="btn-secondary" style="margin-top: 16px;" onclick="handleSync()" id="sync-btn" data-i18n="forceSync">Force Sync Pull</button>
+            <div class="input-group">
+                <label class="input-label" data-i18n="webdavPort">WebDAV Port (Requires Restart)</label>
+                <input type="number" id="dav-port" class="input">
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 8px;">
+                <button class="btn-primary" style="flex: 1;" onclick="saveConfig()" id="save-cfg-btn" data-i18n="saveConfig">Save Config</button>
+                <button class="btn-secondary" style="flex: 1;" onclick="handleSync()" id="sync-btn" data-i18n="forceSync">Force Sync Pull</button>
+            </div>
         </div>
     </main>
 
@@ -99,7 +118,13 @@
                 forceSync: "Force Sync Pull",
                 syncing: "SYNCING...",
                 syncComplete: "Sync Complete!",
-                loginError: "Login failed. Check credentials or WAF."
+                loginError: "Login failed. Check credentials or WAF.",
+                logout: "Logout",
+                webdavUser: "WebDAV Username",
+                webdavPass: "WebDAV Password",
+                webdavPort: "WebDAV Port (Requires Restart)",
+                saveConfig: "Save Config",
+                configSaved: "Config Saved!"
             },
             zh: {
                 statusLabel: "状态",
@@ -119,7 +144,13 @@
                 forceSync: "同步拉取",
                 syncing: "同步中...",
                 syncComplete: "同步完成！",
-                loginError: "登录失败，请检查账号密码或WAF。"
+                loginError: "登录失败，请检查账号密码或WAF。",
+                logout: "退出登录",
+                webdavUser: "WebDAV 用户名",
+                webdavPass: "WebDAV 密码",
+                webdavPort: "WebDAV 端口 (需重启生效)",
+                saveConfig: "保存配置",
+                configSaved: "配置已保存！"
             }
         };
 
@@ -169,6 +200,7 @@
                     statusText.innerText = translations[currentLang].statusOnline;
                     document.getElementById('status-dot').className = "status-dot dot-green";
                     document.getElementById('dash-phone').innerText = data.phone;
+                    loadConfig();
                 } else {
                     document.getElementById('login-view').classList.remove('hidden');
                     document.getElementById('dashboard-view').classList.add('hidden');
@@ -216,6 +248,49 @@
             await fetch('/api/sync', { method: 'POST' });
             btn.innerText = translations[currentLang].forceSync;
             alert(translations[currentLang].syncComplete);
+        }
+
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                const cfg = await res.json();
+                document.getElementById('dav-user').value = cfg.username;
+                document.getElementById('dav-pass').value = cfg.password;
+                document.getElementById('dav-port').value = cfg.port;
+            } catch (e) { console.error("Failed to load config"); }
+        }
+
+        async function saveConfig() {
+            const btn = document.getElementById('save-cfg-btn');
+            const username = document.getElementById('dav-user').value;
+            const password = document.getElementById('dav-pass').value;
+            const port = parseInt(document.getElementById('dav-port').value);
+            
+            btn.innerText = "...";
+            const res = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password, port })
+            });
+            
+            const responseText = await res.text();
+            
+            if (responseText === "Restarting") {
+                btn.innerText = "RESTARTING...";
+                setTimeout(() => {
+                    window.location.port = port;
+                }, 2000);
+            } else {
+                btn.innerText = translations[currentLang].configSaved;
+                setTimeout(() => btn.innerText = translations[currentLang].saveConfig, 2000);
+            }
+        }
+
+        async function handleLogout() {
+            await fetch('/api/logout', { method: 'POST' });
+            document.getElementById('phone').value = '';
+            document.getElementById('password').value = '';
+            fetchStatus();
         }
 
         // Init

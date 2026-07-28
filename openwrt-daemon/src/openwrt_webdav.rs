@@ -68,11 +68,16 @@ static WEBDAV_CONFIG: std::sync::OnceLock<Arc<tokio::sync::Mutex<WebdavConfig>>>
 pub fn get_config() -> Arc<tokio::sync::Mutex<WebdavConfig>> {
     WEBDAV_CONFIG
         .get_or_init(|| {
-            Arc::new(tokio::sync::Mutex::new(WebdavConfig {
+            let default_cfg = WebdavConfig {
                 port: 8888,
                 username: "admin".to_string(),
                 password: "admin".to_string(),
-            }))
+            };
+            let cfg = std::fs::read_to_string("heriheri_config.json")
+                .and_then(|s| serde_json::from_str(&s).map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "parse error")))
+                .unwrap_or(default_cfg);
+                
+            Arc::new(tokio::sync::Mutex::new(cfg))
         })
         .clone()
 }
@@ -217,6 +222,8 @@ pub async fn run_server(state: AppState) {
         .route("/api/status", get(api_status))
         .route("/api/login", post(api_login))
         .route("/api/sync", post(api_sync))
+        .route("/api/logout", post(api_logout))
+        .route("/api/config", get(api_get_config).post(api_set_config))
         
         // --- WEBDAV ROUTES ---
         .route("/stream/:vfs_id", get(handle_stream))
@@ -595,6 +602,61 @@ async fn api_sync(AxumState(state): AxumState<Arc<AppState>>) -> impl IntoRespon
     let _guard = state.sync_lock.lock().await;
     let _ = crate::openwrt_lanzou::execute_sync_pull(&state).await;
     (StatusCode::OK, "Sync Complete")
+}
+
+// --- 5. Logout API ---
+async fn api_logout(AxumState(state): AxumState<Arc<AppState>>) -> impl IntoResponse {
+    *state.current_phone.lock().await = String::new();
+    
+    let mut lanzou = state.lanzou.lock().await;
+    lanzou.ylogin = None;
+    lanzou.folder_stack = vec!["-1".to_string()];
+    
+    let mut vfs_guard = state.vfs.lock().await;
+    *vfs_guard = None; // Wipe the local tree cache from RAM
+    
+    (StatusCode::OK, "Logged out")
+}
+
+// --- 6. WebDAV Config APIs ---
+async fn api_get_config() -> impl IntoResponse {
+    let config = get_config().lock().await.clone();
+    Json(config)
+}
+
+async fn api_set_config(Json(payload): Json<WebdavConfig>) -> impl IntoResponse {
+    let mut restart_needed = false;
+    {
+        let mut config = get_config().lock().await;
+        config.username = payload.username.clone();
+        config.password = payload.password.clone();
+        
+        if config.port != payload.port {
+            config.port = payload.port;
+            restart_needed = true;
+        }
+        
+        // Persist to disk so the restarted daemon remembers the new settings
+        let _ = std::fs::write("heriheri_config.json", serde_json::to_string(&*config).unwrap_or_default());
+    }
+
+    if restart_needed {
+        // Spawn a detached task to restart the daemon after returning the HTTP 200 OK
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            use std::os::unix::process::CommandExt;
+            
+            println!("\n[PROXY] Port changed! Self-restarting daemon...");
+            let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("./heriheri-openwrt"));
+            
+            // exec() completely replaces the current process, safely unbinding the old port instantly
+            let _ = std::process::Command::new(exe).exec();
+            std::process::exit(1); 
+        });
+        return (StatusCode::OK, "Restarting");
+    }
+    
+    (StatusCode::OK, "Config Updated")
 }
 
 // ========================================================
