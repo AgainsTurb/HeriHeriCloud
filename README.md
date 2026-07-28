@@ -18,6 +18,14 @@ HeriHeriCloud 是一个跨平台的云盘客户端解决方案。本项目以蓝
 * **Cursor / Claude Desktop 用户**：支持标准 STDIO 模式，在您的 MCP 配置文件中添加启动参数 `--agent`（如 `heriheri.exe --agent`），即可在后台开启无头模式对接。
 * **REST API 模式**：正常打开 HeriHeriCloud 客户端后，MCP 服务端会默认运行在 `http://127.0.0.1:8888/mcp`，支持自定义智能体通过 HTTP POST 调用。
 
+## OpenWRT 路由器支持 (全新功能)
+
+本项目提供超轻量的无头（Headless）守护进程，支持在多种架构的 OpenWRT 路由器上常驻运行，将您的路由器无缝打造成局域网流媒体与文件共享中心！
+
+* **获取与运行**：在 GitHub Releases 页面下载对应路由器架构的单文件程序（支持 `aarch64`、`armv7`、`mipsel`）。通过 SSH/SCP 上传至路由器，执行 `chmod +x heriheri-openwrt-*` 赋予权限后直接运行即可。
+* **内置 WebUI 配置**：程序启动后，在浏览器中访问 `http://<路由器IP>:8888` 即可打开内置的极简可视化面板，完成蓝奏云账号登录、强制同步 VFS 以及修改 WebDAV 端口和账密。
+* **局域网原画串流**：配置完成后，同局域网下的智能电视、Apple TV (Infuse)、本地电脑等均可通过 WebDAV 协议直接挂载，免下载直接观看云盘内的原画视频，体验极速局域网串流。
+
 ## 核心特性
 
 * **跨平台架构**：基于 Tauri v2 + TypeScript + React 构建，确保在提供原生级性能和极低内存占用的同时，实现全平台代码复用。
@@ -215,6 +223,14 @@ This project natively supports Large Language Model agents (like OpenCode, CC Sw
 * **OpenCode / CC Switch Users**: You can find the pre-packaged skill ZIP file in the `skill/` folder at the project root. In your agent client's skills panel, select "Install from ZIP" to empower your AI to upload, download, and manage your cloud drive files automatically (all AI operations are strictly sandboxed within the `AgentWorkspace` folder).
 * **Cursor / Claude Desktop Users**: We support the standard STDIO MCP mode. Simply add the `--agent` launch flag in your MCP configuration (e.g., `heriheri.exe --agent`) for a headless background connection.
 * **REST API Mode**: When the HeriHeriCloud client is running normally, the MCP server actively listens at `http://127.0.0.1:8888/mcp`, allowing custom agents to connect via HTTP POST requests.
+
+## OpenWRT Router Support (NEW)
+
+This project provides an ultra-lightweight headless daemon designed to run continuously on multi-architecture OpenWRT routers, seamlessly transforming your router into a local network media and file sharing hub!
+
+* **Download & Run**: Download the standalone binary for your specific architecture (`aarch64`, `armv7`, `mipsel`) from the GitHub Releases page. Upload it to your router via SSH/SCP, grant execution permissions with `chmod +x heriheri-openwrt-*`, and run it directly.
+* **Built-in WebUI**: Once running, access `http://<Router-IP>:8888` in your browser to open the minimal configuration panel. Here, you can log into your Lanzou Cloud account, force a VFS sync, and customize your WebDAV port and credentials.
+* **Local Network Streaming**: After configuration, any device on the same local network (e.g., Apple TV with Infuse, Smart TVs, PCs) can mount the drive via the WebDAV protocol to stream original-quality cloud videos directly, enjoying blazing-fast local network speeds without downloading.
 
 ## Key Features
 
