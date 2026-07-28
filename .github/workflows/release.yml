@@ -202,9 +202,45 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: 'src-tauri/gen/android/app/build/outputs/apk/**/*.apk'
 
+  # --- PHASE 3.5: COMPILE OPENWRT TARGETS (RUNS IN PARALLEL) ---
+  publish-openwrt:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-musl
+          - armv7-unknown-linux-musleabi
+          - mipsel-unknown-linux-musl
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build OpenWRT Daemon
+        env:
+          HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
+          CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
+        run: |
+          cd openwrt-daemon
+          cross build --target ${{ matrix.target }} --release
+
+      - name: Rename and Upload Binary
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Rename the binary to include the architecture so they don't overwrite each other!
+          mv target/${{ matrix.target }}/release/heriheri-openwrt heriheri-openwrt-${{ matrix.target }}
+          gh release upload ${{ github.ref_name }} heriheri-openwrt-${{ matrix.target }}
+
   # --- PHASE 4: AUTOMATICALLY PUBLISH THE RELEASE ---
   finalize-release:
-    needs: [publish-tauri, publish-android]
+    needs: [publish-tauri, publish-android, publish-openwrt]
     permissions:
       contents: write
     runs-on: ubuntu-22.04

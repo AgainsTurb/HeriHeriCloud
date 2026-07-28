@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.3.0] – 2026-07-28
+
+### 新增
+- 支持部分OpenWRT登录并挂载WebDAV。
+
+### 变更
+- 无。
+
+### 修复
+- 无。
+
+### Added
+- Supports partial OpenWRT login and WebDAV mounting.
+
+### Changed
+- None.
+
+### Fixed
+- None.
+
+---
+
+---
+
 ## [1.2.1] – 2026-07-26
 
 ### 新增
