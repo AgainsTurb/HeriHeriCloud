@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -84,7 +85,7 @@ const ALLOWED_EXTS: &[&str] = &[
     "brushset",
 ];
 
-static TIME_OFFSET: AtomicI64 = AtomicI64::new(0);
+static TIME_OFFSET: RwLock<i64> = RwLock::new(0);
 static HAS_SYNCED_TIME: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -545,7 +546,9 @@ pub fn current_timestamp() -> u64 {
                 "[TIME-SYNC] Hardware clock offset established: {}ms",
                 offset
             );
-            TIME_OFFSET.store(offset, Ordering::Relaxed);
+            if let Ok(mut w) = TIME_OFFSET.write() {
+                *w = offset;
+            }
         } else {
             println!("[TIME-SYNC] Network unavailable. Proceeding with zero offset.");
         }
@@ -559,7 +562,7 @@ pub fn current_timestamp() -> u64 {
         .unwrap()
         .as_millis() as i64;
 
-    let offset = TIME_OFFSET.load(Ordering::Relaxed);
+    let offset = *TIME_OFFSET.read().unwrap();
 
     // Return the perfectly synchronized time
     (local_time + offset) as u64
