@@ -228,6 +228,9 @@ jobs:
           echo "[env]" > .cargo/config.toml
           echo 'HERIHERI_SECRET_KEY = "${{ secrets.HERIHERI_SECRET_KEY }}"' >> .cargo/config.toml
           echo 'CHUNKS_NAMES_KEY = "${{ secrets.CHUNKS_NAMES_KEY }}"' >> .cargo/config.toml
+
+          echo '[target.mipsel-unknown-linux-musl]' >> .cargo/config.toml
+          echo 'linker = "mipsel-unknown-linux-musl-gcc"' >> .cargo/config.toml
           
           echo '[target.mipsel-unknown-linux-musl]' > Cross.toml
           echo 'image = "messense/rust-musl-cross:mipsel-musl"' >> Cross.toml
