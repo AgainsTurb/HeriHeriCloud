@@ -23,6 +23,7 @@ HeriHeriCloud 是一个跨平台的云盘客户端解决方案。本项目以蓝
 本项目提供超轻量的无头（Headless）守护进程，支持在多种架构的 OpenWRT 路由器上常驻运行，将您的路由器无缝打造成局域网流媒体与文件共享中心！
 
 * **获取与运行**：在 GitHub Releases 页面下载对应路由器架构的单文件程序（支持 `aarch64`、`armv7`、`mipsel`）。通过 SSH/SCP 上传至路由器，执行 `chmod +x heriheri-openwrt-*` 赋予权限后直接运行即可。
+* **后台与开机自启**：由于本程序为纯静态编译的单文件（非 ipk），若要使其在关闭 SSH 后保持后台运行，请使用命令 `nohup /存放路径/heriheri-openwrt-* >/dev/null 2>&1 &`。如需开机自动运行，请在 OpenWRT Web 后台的“系统 -> 启动项 -> 本地启动脚本”（即 `/etc/rc.local`）中，将该启动命令添加至 `exit 0` 上方。
 * **内置 WebUI 配置**：程序启动后，在浏览器中访问 `http://<路由器IP>:8888` 即可打开内置的极简可视化面板，完成蓝奏云账号登录、强制同步 VFS 以及修改 WebDAV 端口和账密。
 * **局域网原画串流**：配置完成后，同局域网下的智能电视、Apple TV (Infuse)、本地电脑等均可通过 WebDAV 协议直接挂载，免下载直接观看云盘内的原画视频，体验极速局域网串流。
 
@@ -229,6 +230,7 @@ This project natively supports Large Language Model agents (like OpenCode, CC Sw
 This project provides an ultra-lightweight headless daemon designed to run continuously on multi-architecture OpenWRT routers, seamlessly transforming your router into a local network media and file sharing hub!
 
 * **Download & Run**: Download the standalone binary for your specific architecture (`aarch64`, `armv7`, `mipsel`) from the GitHub Releases page. Upload it to your router via SSH/SCP, grant execution permissions with `chmod +x heriheri-openwrt-*`, and run it directly.
+* **Persistence & Auto-Start**: Because this is a statically compiled standalone binary (not an `.ipk`), running it directly ties it to your SSH session. To keep it running in the background, start it with `nohup /path/to/heriheri-openwrt-* >/dev/null 2>&1 &`. For auto-start on router reboot, navigate to **System -> Startup -> Local Startup** in your OpenWRT LuCI WebGUI (which edits `/etc/rc.local`) and paste the `nohup` command just above `exit 0`.
 * **Built-in WebUI**: Once running, access `http://<Router-IP>:8888` in your browser to open the minimal configuration panel. Here, you can log into your Lanzou Cloud account, force a VFS sync, and customize your WebDAV port and credentials.
 * **Local Network Streaming**: After configuration, any device on the same local network (e.g., Apple TV with Infuse, Smart TVs, PCs) can mount the drive via the WebDAV protocol to stream original-quality cloud videos directly, enjoying blazing-fast local network speeds without downloading.
 
