@@ -592,47 +592,63 @@ async fn api_login(
     AxumState(state): AxumState<Arc<AppState>>,
     Json(payload): Json<LoginReq>,
 ) -> impl IntoResponse {
-    let mut lanzou = state.lanzou.lock().await;
-    match lanzou.login(&payload.phone, &payload.password).await {
-        Ok(_) => {
-            *state.current_phone.lock().await = payload.phone.clone();
-            
-            // SAVE LANZOU ACCOUNT TO PERSISTENT CONFIG
-            {
-                let config_arc = get_config();
-                let mut config = config_arc.lock().await;
-                config.lanzou_phone = payload.phone.clone();
-                config.lanzou_pass = payload.password.clone();
-                let _ = std::fs::write("heriheri_config.json", serde_json::to_string(&*config).unwrap_or_default());
-            }
-
-            // BUILD VFS DYNAMICALLY SINCE WE BYPASSED IT ON BOOT
+    let mut root_info = None;
+    
+    // 1. Scope the Lanzou lock strictly to the login and init phase
+    let login_success = {
+        let mut lanzou = state.lanzou.lock().await;
+        if lanzou.login(&payload.phone, &payload.password).await.is_ok() {
             if let Ok((root_id, deeper_id)) = lanzou.init_vfs_root().await {
-                let file_name = format!("heriheri_tree_{}.txt", payload.phone);
-                let tree_path = std::path::PathBuf::from(format!("/tmp/{}", file_name));
-                
-                let tree = match crate::openwrt_heriheri::VfsTree::load_local(tree_path.clone()) {
-                    Ok(mut t) => {
-                        if t.deeperdir_lanzou_id.is_empty() {
-                            t.deeperdir_lanzou_id = deeper_id;
-                            let _ = t.save_local();
-                        }
-                        t
-                    }
-                    Err(_) => {
-                        let t = crate::openwrt_heriheri::VfsTree::new(root_id, deeper_id, tree_path);
-                        let _ = t.save_local();
-                        t
-                    }
-                };
-                *state.vfs.lock().await = Some(tree);
-                let _ = crate::openwrt_lanzou::execute_sync_pull(&state).await; // Trigger a fresh sync pull
+                root_info = Some((root_id, deeper_id));
             }
-
-            (StatusCode::OK, "Success")
+            true
+        } else {
+            false
         }
-        Err(_) => (StatusCode::UNAUTHORIZED, "Login Failed"),
+    };
+
+    // 2. If login failed, return immediately
+    if !login_success {
+        return (StatusCode::UNAUTHORIZED, "Login Failed");
     }
+
+    // 3. Save to config and update state (Now safely OUTSIDE the Lanzou lock)
+    *state.current_phone.lock().await = payload.phone.clone();
+    
+    {
+        let config_arc = get_config();
+        let mut config = config_arc.lock().await;
+        config.lanzou_phone = payload.phone.clone();
+        config.lanzou_pass = payload.password.clone();
+        let _ = std::fs::write("heriheri_config.json", serde_json::to_string(&*config).unwrap_or_default());
+    }
+
+    // 4. Build VFS and trigger Sync Pull
+    if let Some((root_id, deeper_id)) = root_info {
+        let file_name = format!("heriheri_tree_{}.txt", payload.phone);
+        let tree_path = std::path::PathBuf::from(format!("/tmp/{}", file_name));
+        
+        let tree = match crate::openwrt_heriheri::VfsTree::load_local(tree_path.clone()) {
+            Ok(mut t) => {
+                if t.deeperdir_lanzou_id.is_empty() {
+                    t.deeperdir_lanzou_id = deeper_id;
+                    let _ = t.save_local();
+                }
+                t
+            }
+            Err(_) => {
+                let t = crate::openwrt_heriheri::VfsTree::new(root_id, deeper_id, tree_path);
+                let _ = t.save_local();
+                t
+            }
+        };
+        *state.vfs.lock().await = Some(tree);
+        
+        // DEADLOCK FIXED: It is now perfectly safe to call sync_pull!
+        let _ = crate::openwrt_lanzou::execute_sync_pull(&state).await; 
+    }
+
+    (StatusCode::OK, "Success")
 }
 
 // --- 4. Sync Pull API ---
