@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.3.2] – 2026-08-01
+
+### 新增
+- 设置中增加文件过滤，可以选择特定文件不上传。
+
+### 变更
+- 无。
+
+### 修复
+- 修复OpenWRT网页端无法登录。
+- 修复WebDAV挂载后同名文件只显示其中一个。
+
+### Added
+- The settings include a file filter that allows you to select specific files not to be uploaded.
+
+### Changed
+- None.
+
+### Fixed
+- Fixed the inability to log in to the OpenWRT web client.
+- Fixed an issue where only one of the files with the same name was displayed after WebDAV was mounted.
+
+---
+
+---
+
 ## [1.3.1] – 2026-07-28
 
 ### 新增
