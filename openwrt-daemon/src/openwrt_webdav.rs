@@ -60,6 +60,8 @@ pub struct WebdavConfig {
     pub port: u16,
     pub username: String,
     pub password: String,
+    #[serde(default)] pub lanzou_phone: String,
+    #[serde(default)] pub lanzou_pass: String,
 }
 
 static WEBDAV_CONFIG: std::sync::OnceLock<Arc<tokio::sync::Mutex<WebdavConfig>>> =
@@ -72,6 +74,8 @@ pub fn get_config() -> Arc<tokio::sync::Mutex<WebdavConfig>> {
                 port: 8888,
                 username: "admin".to_string(),
                 password: "admin".to_string(),
+                lanzou_phone: "".to_string(),
+                lanzou_pass: "".to_string(),
             };
             let cfg = std::fs::read_to_string("heriheri_config.json")
                 .and_then(|s| serde_json::from_str(&s).map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "parse error")))
@@ -591,7 +595,40 @@ async fn api_login(
     let mut lanzou = state.lanzou.lock().await;
     match lanzou.login(&payload.phone, &payload.password).await {
         Ok(_) => {
-            *state.current_phone.lock().await = payload.phone;
+            *state.current_phone.lock().await = payload.phone.clone();
+            
+            // SAVE LANZOU ACCOUNT TO PERSISTENT CONFIG
+            {
+                let config_arc = get_config();
+                let mut config = config_arc.lock().await;
+                config.lanzou_phone = payload.phone.clone();
+                config.lanzou_pass = payload.password.clone();
+                let _ = std::fs::write("heriheri_config.json", serde_json::to_string(&*config).unwrap_or_default());
+            }
+
+            // BUILD VFS DYNAMICALLY SINCE WE BYPASSED IT ON BOOT
+            if let Ok((root_id, deeper_id)) = lanzou.init_vfs_root().await {
+                let file_name = format!("heriheri_tree_{}.txt", payload.phone);
+                let tree_path = std::path::PathBuf::from(format!("/tmp/{}", file_name));
+                
+                let tree = match crate::openwrt_heriheri::VfsTree::load_local(tree_path.clone()) {
+                    Ok(mut t) => {
+                        if t.deeperdir_lanzou_id.is_empty() {
+                            t.deeperdir_lanzou_id = deeper_id;
+                            let _ = t.save_local();
+                        }
+                        t
+                    }
+                    Err(_) => {
+                        let t = crate::openwrt_heriheri::VfsTree::new(root_id, deeper_id, tree_path);
+                        let _ = t.save_local();
+                        t
+                    }
+                };
+                *state.vfs.lock().await = Some(tree);
+                let _ = crate::openwrt_lanzou::execute_sync_pull(&state).await; // Trigger a fresh sync pull
+            }
+
             (StatusCode::OK, "Success")
         }
         Err(_) => (StatusCode::UNAUTHORIZED, "Login Failed"),
@@ -615,6 +652,15 @@ async fn api_logout(AxumState(state): AxumState<Arc<AppState>>) -> impl IntoResp
     
     let mut vfs_guard = state.vfs.lock().await;
     *vfs_guard = None; // Wipe the local tree cache from RAM
+    
+    // CLEAR PERSISTENT CONFIG
+    {
+        let config_arc = get_config();
+        let mut config = config_arc.lock().await;
+        config.lanzou_phone = String::new();
+        config.lanzou_pass = String::new();
+        let _ = std::fs::write("heriheri_config.json", serde_json::to_string(&*config).unwrap_or_default());
+    }
     
     (StatusCode::OK, "Logged out")
 }
