@@ -313,6 +313,38 @@ async fn resolve_lanzou_media(
 // ========================================================
 // WEBDAV TRANSLATION LAYER (INFUSE / JELLYFIN)
 // ========================================================
+fn get_resolved_children(
+    tree: &crate::openwrt_heriheri::VfsTree,
+    pid: u64,
+) -> Vec<(crate::openwrt_heriheri::VfsNode, String)> {
+    let mut children: Vec<_> = tree.nodes.values()
+        .filter(|n| n.pid == pid && !n.is_deleted && !n.is_trashed)
+        .collect();
+    
+    // Sort deterministically by ID (oldest first) to stabilize Syncs
+    children.sort_by_key(|n| n.id);
+
+    let mut seen_names: HashMap<String, u32> = HashMap::new();
+    let mut resolved = Vec::with_capacity(children.len());
+
+    for child in children {
+        let mut current_name = child.name.clone();
+        let count = seen_names.entry(current_name.clone()).or_insert(0);
+        if *count > 0 {
+            if let Some(idx) = current_name.rfind('.') {
+                let (name, ext) = current_name.split_at(idx);
+                current_name = format!("{} ({}){}", name, count, ext);
+            } else {
+                current_name = format!("{} ({})", current_name, count);
+            }
+        }
+        *count += 1;
+        resolved.push((child.clone(), current_name));
+    }
+
+    resolved
+}
+
 async fn handle_dav_dispatch(
     method: axum::http::Method,
     uri: axum::http::Uri,
@@ -364,6 +396,7 @@ async fn handle_dav_dispatch(
     let mut current_id = 0;
     let mut is_dir = true;
     let mut current_node = tree.nodes.get(&0).cloned();
+    let mut resolved_node_name = "Root".to_string();
 
     let parts: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
     println!("[WEBDAV] 🗺️ Target Path: '{}' | Parts: {:?}", p, parts);
@@ -375,21 +408,20 @@ async fn handle_dav_dispatch(
             part, decoded_part, current_id
         );
 
+        let children = get_resolved_children(tree, current_id);
         let mut found = None;
-        for node in tree.nodes.values() {
-            if node.pid == current_id
-                && node.name == decoded_part
-                && !node.is_deleted
-                && !node.is_trashed
-            {
-                found = Some(node.clone());
+
+        for (node, resolved_name) in children {
+            if resolved_name == decoded_part {
+                found = Some((node, resolved_name));
                 break;
             }
         }
-        if let Some(n) = found {
+
+        if let Some((n, r_name)) = found {
             current_id = n.id;
             is_dir = n.node_type == crate::openwrt_heriheri::NodeType::Directory;
-            println!("[WEBDAV] Found node: {} (ID: {})", n.name, n.id);
+            resolved_node_name = r_name;
             current_node = Some(n);
         } else {
             println!(
@@ -411,20 +443,18 @@ async fn handle_dav_dispatch(
                 "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<D:multistatus xmlns:D=\"DAV:\">\n",
             );
 
-            append_propfind_node(&mut xml, is_dir, current_node.as_ref(), p);
+            append_propfind_node(&mut xml, is_dir, current_node.as_ref(), &resolved_node_name, p);
 
             if depth == "1" && is_dir {
-                for child in tree.nodes.values() {
-                    if child.pid == current_id && !child.is_deleted && !child.is_trashed {
-                        let safe_name = quick_xml_escape(&child.name);
-                        let child_path = if p.is_empty() || p == "/" {
-                            format!("/{}", safe_name)
-                        } else {
-                            format!("{}/{}", p, safe_name)
-                        };
-                        let child_is_dir = child.node_type == crate::openwrt_heriheri::NodeType::Directory;
-                        append_propfind_node(&mut xml, child_is_dir, Some(child), &child_path);
-                    }
+                let children = get_resolved_children(tree, current_id);
+                for (child, resolved_name) in children {
+                    let child_path = if p.is_empty() || p == "/" {
+                        format!("/{}", resolved_name)
+                    } else {
+                        format!("{}/{}", p, resolved_name)
+                    };
+                    let child_is_dir = child.node_type == crate::openwrt_heriheri::NodeType::Directory;
+                    append_propfind_node(&mut xml, child_is_dir, Some(&child), &resolved_name, &child_path);
                 }
             }
             xml.push_str("</D:multistatus>");
@@ -480,6 +510,7 @@ fn append_propfind_node(
     xml: &mut String,
     is_dir: bool,
     node: Option<&crate::openwrt_heriheri::VfsNode>,
+    display_name: &str,
     path: &str,
 ) {
     let mut raw_path = if path.starts_with('/') {
@@ -514,7 +545,7 @@ fn append_propfind_node(
     xml.push_str("      <D:prop>\n");
     xml.push_str(&format!(
         "        <D:displayname>{}</D:displayname>\n",
-        quick_xml_escape(name)
+        quick_xml_escape(display_name)
     ));
 
     if is_dir {
