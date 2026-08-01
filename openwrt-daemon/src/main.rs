@@ -1,3 +1,8 @@
+mod openwrt_heriheri;
+mod openwrt_lanzou;
+mod openwrt_lanzou_down;
+mod openwrt_webdav;
+
 use openwrt_heriheri::VfsTree;
 use openwrt_lanzou::{AppState, LanzouCloud};
 use openwrt_lanzou_down::LanzouDownloader;
@@ -19,11 +24,12 @@ async fn main() {
     let phone = config["lanzou_phone"].as_str().unwrap_or("").to_string();
     let password = config["lanzou_pass"].as_str().unwrap_or("").to_string();
 
+    // 2. Initialize Core Cloud Services
     let lanzou = Arc::new(Mutex::new(LanzouCloud::new()));
     let downloader = Arc::new(Mutex::new(LanzouDownloader::new()));
     let vfs_tree = Arc::new(Mutex::new(None));
 
-    // 2. Perform Login ONLY if credentials exist in config
+    // 3. Perform Headless Login ONLY if credentials exist in config
     if !phone.is_empty() && !password.is_empty() {
         println!("[AUTH] Logging into Lanzou Cloud with {}...", phone);
         let mut lanzou_guard = lanzou.lock().await;
@@ -33,7 +39,7 @@ async fn main() {
         } else {
             println!("[AUTH] Login successful!");
             
-            // 3. Initialize VFS if login succeeded
+            // 4. Initialize VFS if login succeeded
             println!("[VFS] Locating Virtual File System...");
             if let Ok((root_id, deeper_id)) = lanzou_guard.init_vfs_root().await {
                 let file_name = format!("heriheri_tree_{}.txt", phone);
@@ -45,7 +51,7 @@ async fn main() {
                             t.deeperdir_lanzou_id = deeper_id;
                             let _ = t.save_local();
                         }
-                        println!("[VFS] Loaded existing local tree from RAM");
+                        println!("[VFS] Loaded existing local tree from RAM (Timestamp: {})", t.last_modified);
                         t
                     }
                     Err(_) => {
@@ -62,7 +68,7 @@ async fn main() {
         println!("[AUTH] No account configured! Please visit the WebGUI to sign in.");
     }
 
-    // 4. Build the Application State
+    // 5. Build the Application State
     let state = AppState {
         lanzou,
         downloader,
@@ -75,12 +81,16 @@ async fn main() {
         current_phone: Arc::new(Mutex::new(phone)),
     };
 
-    // 5. Perform Sync Pull if VFS was successfully initialized
+    // 6. Perform Sync Pull if VFS was successfully initialized
     if state.vfs.lock().await.is_some() {
         println!("[SYNC] Pulling latest file tree from the cloud...");
-        let _ = openwrt_lanzou::execute_sync_pull(&state).await;
+        match openwrt_lanzou::execute_sync_pull(&state).await {
+            Ok(true) => println!("[SYNC] File tree successfully updated!"),
+            Ok(false) => println!("[SYNC] File tree is already up to date."),
+            Err(e) => println!("[SYNC] Warning: Could not pull latest tree: {}", e),
+        }
     }
 
-    // 6. Boot the WebDAV Proxy Server (Waits infinitely for WebUI or WebDAV clients)
+    // 7. Boot the WebDAV Proxy Server (Waits infinitely for WebUI or WebDAV clients)
     openwrt_webdav::run_server(state).await;
 }
