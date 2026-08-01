@@ -11,6 +11,7 @@ use lanzou::{
     vfs_hard_delete_items, vfs_list_bin, vfs_list_dir, vfs_move_items, vfs_rename_item,
     vfs_rent_item, vfs_resolve_share_code, vfs_restore_items, vfs_search, vfs_sync_pull,
     vfs_sync_push, vfs_update_speed_limits, vfs_upload_file, AppState, LanzouCloud,
+    vfs_update_blacklist
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -93,7 +94,8 @@ pub fn run() {
             get_webdav_config,
             set_webdav_config,
             boot_webdav_server,
-            get_local_ip
+            get_local_ip,
+            vfs_update_blacklist
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

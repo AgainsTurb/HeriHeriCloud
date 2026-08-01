@@ -19,6 +19,7 @@ interface SettingsState {
   webdavPort: number;
   webdavUser: string;
   webdavPass: string;
+  uploadBlacklist: string;
 }
 
 export default function Settings({ isMobile, AppLogo, AppAuth }: any) {
@@ -51,6 +52,7 @@ export default function Settings({ isMobile, AppLogo, AppAuth }: any) {
       webdavPort: 8888,
       webdavUser: "admin",
       webdavPass: "admin",
+      uploadBlacklist: ".DS_Store, desktop.ini, Thumbs.db",
     };
 
     const saved = localStorage.getItem("heriheri_config");
@@ -63,6 +65,8 @@ export default function Settings({ isMobile, AppLogo, AppAuth }: any) {
     const upLimit = settings.unlimitedUpload ? 0 : settings.uploadSpeedLimit;
     const downLimit = settings.unlimitedDownload ? 0 : settings.downloadSpeedLimit;
     await invoke("vfs_update_speed_limits", { uploadLimit: upLimit, downloadLimit: downLimit }).catch(console.error);
+
+    await invoke("vfs_update_blacklist", { blacklist: settings.uploadBlacklist }).catch(console.error);
 
     // Push WebDAV settings to Rust
     await invoke("set_webdav_config", { 
@@ -288,6 +292,34 @@ export default function Settings({ isMobile, AppLogo, AppAuth }: any) {
                       onChange={(e) => setSettings({...settings, downloadSpeedLimit: parseInt(e.target.value) || 0})}
                     />
                   </div>
+                </div>
+              </div>
+
+              <hr style={styles.divider} />
+
+              <h3 style={styles.sectionTitle}>{t("Upload Filter")}</h3>
+              <div style={styles.inputGroup}>
+                <label style={styles.inputLabel}>{t("Blacklisted Files (Comma Separated)")}</label>
+                <input 
+                  style={styles.input} 
+                  type="text" 
+                  value={settings.uploadBlacklist}
+                  onChange={(e) => setSettings({...settings, uploadBlacklist: e.target.value})}
+                  placeholder=".DS_Store, desktop.ini, Thumbs.db"
+                />
+                <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
+                  <button 
+                    style={{...styles.secondaryButton, padding: "4px 8px", fontSize: "10px"}} 
+                    onClick={() => setSettings({...settings, uploadBlacklist: ".DS_Store, desktop.ini, Thumbs.db, .Spotlight-V100, .Trashes"})}
+                  >
+                    {t("Default System Files")}
+                  </button>
+                  <button 
+                    style={{...styles.secondaryButton, padding: "4px 8px", fontSize: "10px"}} 
+                    onClick={() => setSettings({...settings, uploadBlacklist: ""})}
+                  >
+                    {t("Clear")}
+                  </button>
                 </div>
               </div>
             </div>

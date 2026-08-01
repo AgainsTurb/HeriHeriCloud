@@ -76,6 +76,10 @@ export default function App() {
         password: config.webdavPass || "admin"
       }).catch(err => console.error("Failed to boot WebDAV:", err));
     }
+
+    invoke("vfs_update_blacklist", { 
+      blacklist: config.uploadBlacklist || ".DS_Store, desktop.ini, Thumbs.db" 
+    }).catch(console.error);
   }, []);
 
   useEffect(() => {

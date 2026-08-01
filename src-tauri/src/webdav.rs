@@ -937,6 +937,7 @@ pub fn get_local_ip() -> String {
 }
 
 async fn handle_mcp_http(
+    AxumState(_state): AxumState<Arc<AppState>>,
     axum::Extension(app): axum::Extension<tauri::AppHandle>,
     axum::Json(req): axum::Json<crate::mcp::JsonRpcRequest>,
 ) -> impl IntoResponse {

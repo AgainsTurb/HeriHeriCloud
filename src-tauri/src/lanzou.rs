@@ -19,8 +19,10 @@ use tauri::{AppHandle, Manager, State};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use std::sync::RwLock;
 
 const BASE_URL: &str = "https://up.woozooo.com";
+static UPLOAD_BLACKLIST: RwLock<Vec<String>> = RwLock::new(Vec::new());
 
 #[derive(Clone)]
 pub struct LanzouCloud {
@@ -1524,6 +1526,20 @@ pub async fn vfs_upload_file(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
+
+    let is_blacklisted = {
+        if let Ok(lock) = UPLOAD_BLACKLIST.read() {
+            lock.contains(&original_name)
+        } else {
+            false
+        }
+    };
+
+    if is_blacklisted {
+        state.task_ctrl.lock().await.remove(&task_id);
+        return Err("EXISTS:Blacklisted File".to_string());
+    }
+
     let original_ext = path
         .extension()
         .unwrap_or_default()
@@ -3082,4 +3098,14 @@ pub async fn vfs_search(
     }
 
     Ok(results)
+}
+
+#[tauri::command]
+pub fn vfs_update_blacklist(blacklist: String) {
+    if let Ok(mut lock) = UPLOAD_BLACKLIST.write() {
+        *lock = blacklist.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
 }
