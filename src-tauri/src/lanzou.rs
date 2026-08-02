@@ -1467,8 +1467,17 @@ pub async fn vfs_create_folder(
                 .unwrap_or(tree.root_lanzou_id.clone())
         };
 
+        let mut safe_lanzou_name: String = name.chars().map(|c| {
+            if c.is_alphanumeric() { c } else { '_' }
+        }).collect();
+
+        // Fallback just in case the user named the folder entirely with symbols (e.g. "+++")
+        if safe_lanzou_name.replace("_", "").is_empty() {
+            safe_lanzou_name = format!("folder_{}", crate::heriheri::current_timestamp());
+        }
+
         let res = lanzou
-            .create_folder_in_target(name.clone(), desc, target_lanzou_folder)
+            .create_folder_in_target(safe_lanzou_name, desc, target_lanzou_folder)
             .await?;
         let new_lanzou_id = res["text"].as_str().unwrap_or("").to_string();
 
@@ -1817,10 +1826,16 @@ pub async fn vfs_delete_item(id: u64, state: tauri::State<'_, AppState>) -> Resu
             (node.lanzou_id.clone(), is_dir || is_chunked)
         };
 
-        if is_physical_folder {
-            let _ = lanzou.delete_folder(lanzou_id).await;
-        } else {
-            let _ = lanzou.delete_file(lanzou_id).await;
+        let active_references = tree.nodes.values()
+            .filter(|n| n.lanzou_id == lanzou_id && !n.is_deleted && !n.is_trashed)
+            .count();
+
+        if active_references <= 1 {
+            if is_physical_folder {
+                let _ = lanzou.delete_folder(lanzou_id).await;
+            } else {
+                let _ = lanzou.delete_file(lanzou_id).await;
+            }
         }
 
         tree.delete_node(id);
@@ -2069,7 +2084,7 @@ pub async fn vfs_batch_delete(
         let targets = get_descendants(tree, &ids, false);
         let now = crate::heriheri::current_timestamp();
 
-        for id in targets {
+        for &id in &targets {
             if let Some(node) = tree.nodes.get(&id).cloned() {
                 if node.is_trashed {
                     continue;
@@ -2081,18 +2096,28 @@ pub async fn vfs_batch_delete(
                     && !node.chunks.is_empty();
                 let is_physical_folder = is_dir || is_chunked;
 
-                if is_physical_folder {
-                    let _ = lanzou.delete_folder(node.lanzou_id).await;
-                } else {
-                    let _ = lanzou.delete_file(node.lanzou_id).await;
-                }
+                // Count if any OTHER surviving node still relies on this physical file
+                let shared_surviving_references = tree.nodes.values()
+                    .filter(|n| n.lanzou_id == node.lanzou_id && !n.is_deleted && !n.is_trashed && !targets.contains(&n.id))
+                    .count();
 
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-                if let Some(mut_node) = tree.nodes.get_mut(&id) {
-                    mut_node.is_trashed = true;
-                    mut_node.time = now;
+                // Only move to Lanzou's physical Recycle Bin if NO other active nodes are using it!
+                if shared_surviving_references == 0 {
+                    if is_physical_folder {
+                        let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
+                    } else {
+                        let _ = lanzou.delete_file(node.lanzou_id.clone()).await;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
+            }
+        }
+
+        // Move the requested nodes to the local VFS trash bin
+        for id in targets {
+            if let Some(mut_node) = tree.nodes.get_mut(&id) {
+                mut_node.is_trashed = true;
+                mut_node.time = now;
             }
         }
         tree.touch();
@@ -2245,11 +2270,17 @@ pub async fn vfs_restore_items(
                     && !node.chunks.is_empty();
                 let is_physical_folder = is_dir || is_chunked;
 
-                if lanzou
-                    .restore_item(&node.lanzou_id, is_physical_folder, &formhash)
-                    .await
-                    .unwrap_or(false)
-                {
+                let shared_active_count = tree.nodes.values()
+                    .filter(|n| n.lanzou_id == node.lanzou_id && n.id != id && !n.is_deleted && !n.is_trashed)
+                    .count();
+
+                let physical_restore_success = if shared_active_count > 0 {
+                    true
+                } else {
+                    lanzou.restore_item(&node.lanzou_id, is_physical_folder, &formhash).await.unwrap_or(false)
+                };
+
+                if physical_restore_success {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                     if !is_physical_folder {
@@ -2296,7 +2327,7 @@ pub async fn vfs_hard_delete_items(
     if let Some(tree) = vfs_guard.as_mut() {
         let targets = get_descendants(tree, &ids, false);
 
-        for id in targets {
+        for &id in &targets {
             if let Some(node) = tree.nodes.get(&id).cloned() {
                 if !node.is_trashed {
                     continue;
@@ -2308,11 +2339,20 @@ pub async fn vfs_hard_delete_items(
                 let is_physical_folder = is_dir || is_chunked;
 
                 if !node.lanzou_id.starts_with("alien://") {
-                    let _ = lanzou
-                        .hard_delete_item(&node.lanzou_id, is_physical_folder, &formhash)
-                        .await;
+                    
+                    // Count if any OTHER surviving node still relies on this physical file
+                    let shared_surviving_references = tree.nodes.values()
+                        .filter(|n| n.lanzou_id == node.lanzou_id && !n.is_deleted && !targets.contains(&n.id))
+                        .count();
 
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    // Only physically hard-delete if no other nodes are using it!
+                    if shared_surviving_references == 0 {
+                        let _ = lanzou
+                            .hard_delete_item(&node.lanzou_id, is_physical_folder, &formhash)
+                            .await;
+
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
                 }
             }
         }

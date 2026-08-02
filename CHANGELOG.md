@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.3.3] – 2026-08-02
+
+### 新增
+- 无。
+
+### 变更
+- 无。
+
+### 修复
+- 修复创建文件夹时使用非法字符会导致文件夹创建失败。
+- 修复GitHub入口以及更新检测跳转GitHub Release界面。
+- 修复文件秒传后删除原文件导致秒传文件失效。
+
+### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- Fixed an issue where using illegal characters during folder creation would cause folder creation to fail.
+- Fixed the GitHub entry point and the update check redirection to the GitHub Release page.
+- Fixed an issue where deleting the original file after a file was instant copied would cause the instant copied file to become invalid.
+
+---
+
+---
+
 ## [1.3.2] – 2026-08-01
 
 ### 新增

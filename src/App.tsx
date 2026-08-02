@@ -1,5 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
-import { type } from "@tauri-apps/plugin-os";
+import { type, arch } from "@tauri-apps/plugin-os";
 import { open as openBrowser } from "@tauri-apps/plugin-shell";
 import ReactMarkdown from 'react-markdown';
 import { useState, useEffect, useRef } from "react";
@@ -33,11 +33,14 @@ export default function App() {
   const [showUpdateModal, setShowUpdateModal] = useState(false);
 
   const [isMobile, setIsMobile] = useState(false);
+  const [osInfo, setOsInfo] = useState({ os: "Unknown", architecture: "Unknown" });
 
   useEffect(() => {
     try {
-      const os = type();
-      setIsMobile(os === 'android' || os === 'ios');
+      const osType = type();
+      const osArch = arch();
+      setOsInfo({ os: osType, architecture: osArch });
+      setIsMobile(osType === 'android' || osType === 'ios');
     } catch (err) {
       console.warn("Failed to detect OS type:", err);
     }
@@ -239,6 +242,20 @@ export default function App() {
     setStatus("Disconnected");
     setUsername("");
   }
+
+  const openUrl = async (url: string) => {
+    try {
+      await openBrowser(url);
+    } catch (e) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  };
 
   // --- UPLOAD MANAGER ---
   useEffect(() => {
@@ -471,7 +488,18 @@ export default function App() {
 
   const AppLogo = (
     <div style={{...styles.logoContainer, marginBottom: isMobile ? 0 : "30px"}}>
-      <h1 style={{...styles.logoText, fontSize: isMobile ? "16px" : "20px"}}>HERIHERI</h1>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <h1 style={{...styles.logoText, fontSize: isMobile ? "16px" : "20px"}}>HERIHERI</h1>
+        <svg 
+          onClick={() => openUrl("https://github.com/AgainsTurb/HeriHeriCloud")}
+          style={{ cursor: "pointer", color: "#111827", width: isMobile ? "18px" : "22px", height: isMobile ? "18px" : "22px", transition: "opacity 0.2s" }} 
+          viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          onMouseOver={(e) => e.currentTarget.style.opacity = "0.6"}
+          onMouseOut={(e) => e.currentTarget.style.opacity = "1"}
+        >
+          <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+        </svg>
+      </div>
       <div style={{ ...styles.badge, position: "relative", cursor: "pointer" }} onClick={() => checkForUpdates(true)}>
         V{appVersion || "..."}
         {updateAvailable?.isNewer && <div style={styles.redDot} />}
@@ -633,6 +661,9 @@ export default function App() {
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <div style={styles.inputLabel}>{t("Current Version")}: V{appVersion}</div>
               <div style={styles.inputLabel}>{t("Latest Version")}: {updateAvailable.version}</div>
+              <div style={{...styles.inputLabel, color: "#3b82f6"}}>
+                {t("Detected System")}: {osInfo.os.toUpperCase()} ({osInfo.architecture})
+              </div>
             </div>
 
             <div style={styles.inputGroup}>
@@ -645,14 +676,12 @@ export default function App() {
             {updateAvailable.isNewer && (
               <div style={{ marginTop: "8px", fontSize: "11px", fontWeight: "700" }}>
                 <span style={{ color: "#4b5563" }}>{t("Direct Link")}: </span>
-                <a 
-                  href={updateAvailable.url} 
-                  target="_blank" 
-                  rel="noreferrer" 
-                  style={{ color: "#3b82f6", wordBreak: "break-all" }}
+                <span 
+                  onClick={() => openUrl(updateAvailable.url)} 
+                  style={{ color: "#3b82f6", wordBreak: "break-all", cursor: "pointer", textDecoration: "underline" }}
                 >
                   {updateAvailable.url}
-                </a>
+                </span>
               </div>
             )}
 
@@ -666,10 +695,8 @@ export default function App() {
               {updateAvailable.isNewer && (
                 <button 
                   style={styles.primaryButton} 
-                  onClick={async () => {
-                    await openBrowser(updateAvailable.url).catch(() => {
-                      window.open(updateAvailable.url, '_blank');
-                    });
+                  onClick={() => {
+                    openUrl(updateAvailable.url);
                     setShowUpdateModal(false);
                   }}
                 >
