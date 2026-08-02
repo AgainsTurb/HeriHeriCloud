@@ -1524,3 +1524,1167 @@ pub async fn execute_sync_pull(state: &AppState) -> Result<bool, String> {
 
     Ok(true)
 }
+
+// ========================================================
+// UNIVERSAL HEADLESS CLI COMMANDS
+// ========================================================
+
+pub async fn vfs_control_task(
+    task_id: String,
+    action: u8,
+    state: &AppState,
+) -> Result<(), String> {
+    let map = state.task_ctrl.lock().await;
+    if let Some(flag) = map.get(&task_id) {
+        flag.store(action, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+pub async fn set_lanzou_cookies(
+    ylogin: String,
+    phpdisk_info: String,
+    phone: String,
+    state: &AppState,
+) -> Result<bool, String> {
+    let mut lanzou = state.lanzou.lock().await;
+    lanzou.set_cookies(ylogin, phpdisk_info);
+    *state.current_phone.lock().await = phone;
+    lanzou.is_logged_in().await
+}
+
+pub async fn init_vfs_root(
+    phone: String,
+    state: &AppState,
+) -> Result<(), String> {
+    let _ = crate::openwrt_heriheri::current_timestamp();
+
+    {
+        let mut current_phone = state.current_phone.lock().await;
+        *current_phone = phone.clone();
+    }
+
+    // Universal CLI Pathing: Works on OpenWRT (/tmp) and Windows/Mac Temp dirs automatically
+    let app_data_dir = std::env::temp_dir();
+    let file_name = if phone.is_empty() {
+        "heriheri_tree.txt".to_string()
+    } else {
+        format!("heriheri_tree_{}.txt", phone)
+    };
+    let tree_path = app_data_dir.join(file_name);
+
+    let mut lanzou = state.lanzou.lock().await;
+    let (root_lanzou_id, deeperdir_lanzou_id) = lanzou.init_vfs_root().await?;
+
+    let mut vfs_guard = state.vfs.lock().await;
+
+    if let Ok(mut tree) = crate::openwrt_heriheri::VfsTree::load_local(tree_path.clone()) {
+        if tree.deeperdir_lanzou_id.is_empty() {
+            tree.deeperdir_lanzou_id = deeperdir_lanzou_id;
+            let _ = tree.save_local();
+        }
+        *vfs_guard = Some(tree);
+    } else {
+        let mut tree = crate::openwrt_heriheri::VfsTree::new(root_lanzou_id, deeperdir_lanzou_id, tree_path);
+        tree.save_local()?;
+        *vfs_guard = Some(tree);
+    }
+
+    let mut stack = state.pid_stack.lock().await;
+    *stack = vec![0];
+    Ok(())
+}
+
+pub async fn vfs_list_dir(state: &AppState) -> Result<Vec<crate::openwrt_heriheri::VfsNode>, String> {
+    let vfs_guard = state.vfs.lock().await;
+    let stack = state.pid_stack.lock().await;
+    let current_pid = *stack.last().unwrap_or(&0);
+
+    if let Some(tree) = &*vfs_guard {
+        let nodes = tree
+            .list_dir(current_pid)
+            .into_iter()
+            .filter(|n| !n.is_trashed)
+            .collect();
+        Ok(nodes)
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn vfs_enter_folder(id: u64, state: &AppState) -> Result<(), String> {
+    let mut stack = state.pid_stack.lock().await;
+    stack.push(id);
+    Ok(())
+}
+
+pub async fn vfs_go_back(state: &AppState) -> Result<(), String> {
+    let mut stack = state.pid_stack.lock().await;
+    if stack.len() > 1 {
+        stack.pop();
+    }
+    Ok(())
+}
+
+pub async fn vfs_create_folder(
+    name: String,
+    desc: String,
+    state: &AppState,
+) -> Result<(), String> {
+    let lanzou = state.lanzou.lock().await;
+    let mut vfs_guard = state.vfs.lock().await;
+    let stack = state.pid_stack.lock().await;
+    let current_pid = *stack.last().unwrap_or(&0);
+
+    if let Some(tree) = vfs_guard.as_mut() {
+        let mut depth = 0;
+        let mut curr = current_pid;
+        while curr != 0 {
+            if let Some(n) = tree.nodes.get(&curr) {
+                depth += 1;
+                curr = n.pid;
+            } else {
+                break;
+            }
+        }
+
+        let target_lanzou_folder = if depth >= 2 {
+            tree.deeperdir_lanzou_id.clone() 
+        } else if current_pid == 0 {
+            tree.root_lanzou_id.clone()
+        } else {
+            tree.nodes
+                .get(&current_pid)
+                .map(|n| n.lanzou_id.clone())
+                .unwrap_or(tree.root_lanzou_id.clone())
+        };
+
+        let mut safe_lanzou_name: String = name.chars().map(|c| {
+            if c.is_alphanumeric() { c } else { '_' }
+        }).collect();
+
+        if safe_lanzou_name.replace("_", "").is_empty() {
+            safe_lanzou_name = format!("folder_{}", crate::openwrt_heriheri::current_timestamp());
+        }
+
+        let res = lanzou
+            .create_folder_in_target(safe_lanzou_name, desc, target_lanzou_folder)
+            .await?;
+        let new_lanzou_id = res["text"].as_str().unwrap_or("").to_string();
+
+        tree.create_folder(current_pid, &name, &new_lanzou_id);
+        tree.save_local()?;
+        Ok(())
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn vfs_upload_file(
+    file_path: String,
+    task_id: String,
+    target_pid: u64,
+    resume_folder: String,
+    resume_chunk: usize,
+    state: &AppState,
+) -> Result<(), String> {
+    let task_flag = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    state.task_ctrl.lock().await.insert(task_id.clone(), task_flag.clone());
+
+    let (lanzou_clone, target_lanzou_folder) = {
+        let lanzou = state.lanzou.lock().await;
+        let vfs_guard = state.vfs.lock().await;
+
+        let target_folder = if let Some(tree) = &*vfs_guard {
+            if target_pid == 0 {
+                tree.root_lanzou_id.clone()
+            } else {
+                tree.nodes.get(&target_pid).map(|n| n.lanzou_id.clone()).unwrap_or(tree.root_lanzou_id.clone())
+            }
+        } else {
+            return Err("VFS Offline".to_string());
+        };
+
+        if target_folder.is_empty() { return Err("VFS Offline".to_string()); }
+        (lanzou.clone(), target_folder)
+    };
+
+    let path = std::path::PathBuf::from(&file_path);
+    let original_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+    let is_blacklisted = {
+        if let Ok(lock) = UPLOAD_BLACKLIST.read() {
+            lock.contains(&original_name)
+        } else {
+            false
+        }
+    };
+
+    if is_blacklisted {
+        state.task_ctrl.lock().await.remove(&task_id);
+        return Err("EXISTS:Blacklisted File".to_string());
+    }
+
+    let original_ext = path.extension().unwrap_or_default().to_string_lossy().to_string();
+    let safe_ext = crate::openwrt_heriheri::get_safe_lanzou_ext(&original_ext);
+    let path_clone = path.clone();
+    
+    let (md5_str, total_size, size_str) = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path_clone).map_err(|e| e.to_string())?;
+        let mut context = md5::Context::new();
+        let mut buffer = [0u8; 65536];
+        let mut total_size = 0;
+        loop {
+            let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if count == 0 { break; }
+            context.consume(&buffer[..count]);
+            total_size += count;
+        }
+        let m = format!("{:x}", context.compute());
+        Ok::<_, String>((m, total_size, total_size.to_string()))
+    }).await.unwrap()?;
+
+    let mut instant_copy = None;
+    {
+        let vfs_guard = state.vfs.lock().await;
+        if let Some(tree) = &*vfs_guard {
+            if let Some(existing_node) = tree.nodes.values().find(|n| {
+                n.md5 == md5_str && n.node_type == crate::openwrt_heriheri::NodeType::File && !n.is_deleted && !n.is_trashed && !n.lanzou_id.starts_with("alien://")
+            }) {
+                instant_copy = Some((existing_node.lanzou_id.clone(), existing_node.chunks.clone()));
+            }
+        }
+    }
+
+    if let Some((existing_lanzou_id, existing_chunks)) = instant_copy {
+        let mut vfs_guard = state.vfs.lock().await;
+        if let Some(tree) = vfs_guard.as_mut() {
+            let chunks_u32 = existing_chunks.parse::<u32>().unwrap_or(1);
+            let alien_nodes_to_remove: Vec<u64> = tree.nodes.values()
+                .filter(|n| n.pid == target_pid && n.md5 == md5_str && n.lanzou_id.starts_with("alien://"))
+                .map(|n| n.id).collect();
+            for id in alien_nodes_to_remove { tree.delete_node(id); }
+            tree.add_file(target_pid, &original_name, &existing_lanzou_id, &size_str, &md5_str, &original_ext, chunks_u32);
+            tree.save_local()?;
+        }
+        state.task_ctrl.lock().await.remove(&task_id);
+        println!("[CLI] Instant Copy (秒传) Success for {}", original_name);
+        return Ok(());
+    }
+
+    let chunk_limit = 100 * 1024 * 1024;
+    let mut current_loaded = resume_chunk * chunk_limit;
+
+    // --- TERMINAL PROGRESS BAR SETUP ---
+    let pb = indicatif::ProgressBar::new(total_size as u64);
+    pb.set_style(indicatif::ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+        .unwrap()
+        .progress_chars("#>-"));
+    pb.set_position(current_loaded as u64);
+    // -----------------------------------
+
+    let final_lanzou_id;
+    let final_chunks;
+
+    if total_size <= chunk_limit {
+        let safe_name = format!("{}.{}", md5_str, safe_ext);
+        let mut retry = 0;
+        let upload_res = loop {
+            let chunk_bytes = match std::fs::File::open(&path) {
+                Ok(mut file) => {
+                    let mut buf = vec![0; total_size];
+                    use std::io::Read;
+                    if file.read_exact(&mut buf).is_ok() { Some(bytes::Bytes::from(buf)) } else { None }
+                },
+                Err(_) => None,
+            };
+
+            let chunk_bytes = match chunk_bytes {
+                Some(b) => b,
+                None => {
+                    retry += 1;
+                    if retry >= 10000 { break Err("Local Disk Read Error".to_string()); }
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+            };
+
+            // NOTE: 'app' parameter removed here
+            let res = lanzou_clone.upload_file_direct(
+                chunk_bytes, safe_name.clone(), target_lanzou_folder.clone(),
+                task_id.clone(), 0, total_size,
+                task_flag.clone(), state.upload_limit.clone(), 0,
+            ).await;
+            
+            match res {
+                Ok(val) => break Ok(val),
+                Err(e) => {
+                    if e.contains("PAUSED") || e.contains("CANCELLED") { break Err(e); }
+                    retry += 1;
+                    if retry >= 10000 { break Err(e); }
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+            }
+        };
+
+        if let Err(e) = upload_res {
+            if e.contains("CANCELLED") { return Err("CANCELLED".to_string()); }
+            return Err(e);
+        }
+        
+        current_loaded = total_size;
+        pb.set_position(current_loaded as u64);
+        final_lanzou_id = upload_res.unwrap();
+        final_chunks = 1;
+    } else {
+        let mut actual_resume_folder = resume_folder.clone();
+        let mut actual_resume_chunk = resume_chunk;
+
+        if actual_resume_folder.is_empty() {
+            if let Ok(folders) = lanzou_clone.list_folders_by_id(&target_lanzou_folder).await {
+                if let Some(existing) = folders.iter().find(|f| {
+                    let folder_name = f["name_all"].as_str().unwrap_or_else(|| f["name"].as_str().unwrap_or(""));
+                    folder_name == md5_str
+                }) {
+                    actual_resume_folder = existing["fol_id"].as_str().map(|s| s.to_string()).or_else(|| existing["fol_id"].as_u64().map(|n| n.to_string())).unwrap_or_default();
+                }
+            }
+
+            if !actual_resume_folder.is_empty() {
+                if let Ok(files) = lanzou_clone.list_files_by_id(&actual_resume_folder).await {
+                    actual_resume_chunk = files.len();
+                }
+            } else {
+                let res = lanzou_clone.create_folder_in_target(md5_str.clone(), "".to_string(), target_lanzou_folder.clone()).await?;
+                actual_resume_folder = res["text"].as_str().map(|s| s.to_string()).or_else(|| res["text"].as_u64().map(|n| n.to_string())).unwrap_or_default();
+            }
+        }
+
+        final_lanzou_id = actual_resume_folder;
+        if final_lanzou_id.is_empty() { return Err("Failed to resolve cloud folder".to_string()); }
+
+        let num_chunks = (total_size + chunk_limit - 1) / chunk_limit;
+        final_chunks = num_chunks as u32;
+
+        for i in actual_resume_chunk..num_chunks {
+            let start = i * chunk_limit;
+            let end = std::cmp::min(start + chunk_limit, total_size);
+            let chunk_name = format!("{}.zip", crate::openwrt_webdav::encrypt_chunk_filename(&md5_str, (i + 1) as u32));
+
+            let mut retry = 0;
+            let upload_res = loop {
+                let chunk_bytes = match std::fs::File::open(&path) {
+                    Ok(mut file) => {
+                        use std::io::{Seek, Read};
+                        if file.seek(std::io::SeekFrom::Start(start as u64)).is_ok() {
+                            let mut buf = vec![0; end - start];
+                            if file.read_exact(&mut buf).is_ok() { Some(bytes::Bytes::from(buf)) } else { None }
+                        } else { None }
+                    },
+                    Err(_) => None,
+                };
+
+                let chunk_bytes = match chunk_bytes {
+                    Some(b) => b,
+                    None => {
+                        retry += 1;
+                        if retry >= 10000 { break Err("Local Disk Read Error".to_string()); }
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        continue;
+                    }
+                };
+
+                // NOTE: 'app' parameter removed here
+                let res = lanzou_clone.upload_file_direct(
+                    chunk_bytes, chunk_name.clone(), final_lanzou_id.clone(),
+                    task_id.clone(), current_loaded, total_size,
+                    task_flag.clone(), state.upload_limit.clone(), i % 300
+                ).await;
+                
+                match res {
+                    Ok(val) => break Ok(val),
+                    Err(e) => {
+                        if e.contains("PAUSED") || e.contains("CANCELLED") { break Err(e); }
+                        retry += 1;
+                        if retry >= 10000 { break Err(e); }
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
+                }
+            };
+
+            if let Err(e) = upload_res {
+                if e.contains("PAUSED") { return Err(format!("PAUSED:{}|{}", final_lanzou_id, i)); }
+                if e.contains("CANCELLED") {
+                    let _ = lanzou_clone.delete_folder(final_lanzou_id).await;
+                    return Err("CANCELLED".to_string());
+                }
+                return Err(e);
+            }
+            current_loaded += end - start;
+            pb.set_position(current_loaded as u64);
+        }
+    }
+
+    pb.finish_with_message("Upload Complete!");
+    state.task_ctrl.lock().await.remove(&task_id);
+
+    let mut vfs_guard = state.vfs.lock().await;
+    if let Some(tree) = vfs_guard.as_mut() {
+        let alien_nodes_to_remove: Vec<u64> = tree.nodes.values()
+            .filter(|n| n.pid == target_pid && n.md5 == md5_str && n.lanzou_id.starts_with("alien://"))
+            .map(|n| n.id).collect();
+        for id in alien_nodes_to_remove { tree.delete_node(id); }
+        tree.add_file(target_pid, &original_name, &final_lanzou_id, &size_str, &md5_str, &original_ext, final_chunks);
+        tree.save_local()?;
+    }
+
+    Ok(())
+}
+
+pub async fn vfs_delete_item(id: u64, state: &AppState) -> Result<bool, String> {
+    let lanzou = state.lanzou.lock().await;
+    let mut vfs_guard = state.vfs.lock().await;
+
+    if let Some(tree) = vfs_guard.as_mut() {
+        let (lanzou_id, is_physical_folder) = {
+            let node = tree.nodes.get(&id).ok_or("Node not found in VFS")?;
+            let is_dir = node.node_type == crate::openwrt_heriheri::NodeType::Directory;
+            let is_chunked = node.node_type == crate::openwrt_heriheri::NodeType::File && node.chunks != "1" && !node.chunks.is_empty();
+            (node.lanzou_id.clone(), is_dir || is_chunked)
+        };
+
+        let active_references = tree.nodes.values()
+            .filter(|n| n.lanzou_id == lanzou_id && !n.is_deleted && !n.is_trashed)
+            .count();
+
+        if active_references <= 1 {
+            if is_physical_folder {
+                let _ = lanzou.delete_folder(lanzou_id).await;
+            } else {
+                let _ = lanzou.delete_file(lanzou_id).await;
+            }
+        }
+        tree.delete_node(id);
+        tree.save_local()?;
+        Ok(true)
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn vfs_get_share_info(id: u64, state: &AppState) -> Result<Value, String> {
+    let lanzou = state.lanzou.lock().await;
+    let vfs_guard = state.vfs.lock().await;
+
+    if let Some(tree) = &*vfs_guard {
+        let node = tree.nodes.get(&id).ok_or("Node not found in VFS")?;
+        let is_physical_folder = node.node_type == crate::openwrt_heriheri::NodeType::Directory
+            || (node.node_type == crate::openwrt_heriheri::NodeType::File && node.chunks != "1" && !node.chunks.is_empty());
+
+        lanzou.get_share_info(node.lanzou_id.clone(), is_physical_folder).await
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn login(
+    username: String,
+    password: String,
+    state: &AppState,
+) -> Result<(String, String), String> {
+    let mut lanzou = state.lanzou.lock().await;
+    lanzou.login(&username, &password).await
+}
+
+pub async fn request_register_sms(
+    phone: String,
+    state: &AppState,
+) -> Result<String, String> {
+    let lanzou = state.lanzou.lock().await;
+    lanzou.request_register_sms(&phone).await
+}
+
+pub async fn submit_register(
+    phone: String,
+    code: String,
+    password: String,
+    state: &AppState,
+) -> Result<bool, String> {
+    let lanzou = state.lanzou.lock().await;
+    lanzou.submit_register(&phone, &code, &password).await
+}
+
+pub async fn vfs_get_current_pid(state: &AppState) -> Result<u64, String> {
+    let stack = state.pid_stack.lock().await;
+    Ok(*stack.last().unwrap_or(&0))
+}
+
+pub async fn vfs_batch_delete(
+    ids: Vec<u64>,
+    state: &AppState,
+) -> Result<bool, String> {
+    let lanzou = state.lanzou.lock().await;
+    let mut vfs_guard = state.vfs.lock().await;
+
+    if let Some(tree) = vfs_guard.as_mut() {
+        let targets = crate::openwrt_lanzou::get_descendants(tree, &ids, false);
+        let now = crate::openwrt_heriheri::current_timestamp();
+
+        for &id in &targets {
+            if let Some(node) = tree.nodes.get(&id).cloned() {
+                if node.is_trashed { continue; }
+
+                let is_dir = node.node_type == crate::openwrt_heriheri::NodeType::Directory;
+                let is_chunked = node.node_type == crate::openwrt_heriheri::NodeType::File && node.chunks != "1" && !node.chunks.is_empty();
+                let is_physical_folder = is_dir || is_chunked;
+
+                let shared_surviving_references = tree.nodes.values()
+                    .filter(|n| n.lanzou_id == node.lanzou_id && !n.is_deleted && !n.is_trashed && !targets.contains(&n.id))
+                    .count();
+
+                if shared_surviving_references == 0 {
+                    if is_physical_folder {
+                        let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
+                    } else {
+                        let _ = lanzou.delete_file(node.lanzou_id.clone()).await;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+
+        for id in targets {
+            if let Some(mut_node) = tree.nodes.get_mut(&id) {
+                mut_node.is_trashed = true;
+                mut_node.time = now;
+            }
+        }
+        tree.touch();
+        tree.save_local()?;
+        Ok(true)
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn vfs_move_items(
+    item_ids: Vec<u64>,
+    target_pid: u64,
+    state: &AppState,
+) -> Result<bool, String> {
+    let lanzou = state.lanzou.lock().await;
+    let mut vfs_guard = state.vfs.lock().await;
+
+    if let Some(tree) = vfs_guard.as_mut() {
+        let mut depth = 0;
+        let mut curr = target_pid;
+        while curr != 0 {
+            if let Some(n) = tree.nodes.get(&curr) {
+                depth += 1;
+                curr = n.pid;
+            } else {
+                break;
+            }
+        }
+
+        let target_lanzou_id = if depth >= 2 {
+            tree.deeperdir_lanzou_id.clone()
+        } else if target_pid == 0 {
+            tree.root_lanzou_id.clone()
+        } else {
+            tree.nodes.get(&target_pid).map(|n| n.lanzou_id.clone()).unwrap_or(tree.root_lanzou_id.clone())
+        };
+
+        for id in item_ids {
+            let node_type = tree.nodes.get(&id).map(|n| n.node_type.clone());
+
+            if let Some(crate::openwrt_heriheri::NodeType::Directory) = node_type {
+                crate::openwrt_lanzou::rebuild_folder_recursive(tree, &lanzou, id, target_pid, target_lanzou_id.clone()).await?;
+            } else if let Some(node) = tree.nodes.get(&id).cloned() {
+                if node.lanzou_id.starts_with("alien://") {
+                } else if node.chunks != "1" && !node.chunks.is_empty() {
+                    let res = lanzou.create_folder_in_target(node.md5.clone(), "".to_string(), target_lanzou_id.clone()).await?;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let new_chunk_folder_id = res["text"].as_str().unwrap_or("").to_string();
+
+                    if !new_chunk_folder_id.is_empty() {
+                        if let Ok(parts) = lanzou.list_files_by_id(&node.lanzou_id).await {
+                            for part in parts {
+                                if let Some(fid) = part["id"].as_str() {
+                                    let _ = lanzou.move_item(fid.to_string(), new_chunk_folder_id.clone()).await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                                }
+                            }
+                        }
+                        let _ = lanzou.delete_folder(node.lanzou_id.clone()).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        if let Some(mut_node) = tree.nodes.get_mut(&id) {
+                            mut_node.lanzou_id = new_chunk_folder_id;
+                        }
+                    }
+                } else {
+                    let _ = lanzou.move_item(node.lanzou_id.clone(), target_lanzou_id.clone()).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+
+                if let Some(mut_node) = tree.nodes.get_mut(&id) {
+                    mut_node.pid = target_pid;
+                    mut_node.time = crate::openwrt_heriheri::current_timestamp();
+                }
+            }
+        }
+        tree.touch();
+        tree.save_local()?;
+        Ok(true)
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn vfs_list_bin(
+    state: &AppState,
+) -> Result<Vec<crate::openwrt_heriheri::VfsNode>, String> {
+    let vfs_guard = state.vfs.lock().await;
+    if let Some(tree) = &*vfs_guard {
+        let bin_nodes: Vec<crate::openwrt_heriheri::VfsNode> = tree.nodes.values()
+            .filter(|n| n.is_trashed && !n.is_deleted)
+            .cloned().collect();
+        Ok(bin_nodes)
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn vfs_restore_items(
+    ids: Vec<u64>,
+    state: &AppState,
+) -> Result<bool, String> {
+    let lanzou = state.lanzou.lock().await;
+    let formhash = lanzou.get_formhash().await?;
+    let mut vfs_guard = state.vfs.lock().await;
+
+    if let Some(tree) = vfs_guard.as_mut() {
+        let targets = crate::openwrt_lanzou::get_descendants(tree, &ids, true);
+        let now = crate::openwrt_heriheri::current_timestamp();
+
+        for id in targets {
+            if let Some(node) = tree.nodes.get(&id).cloned() {
+                if !node.is_trashed { continue; }
+
+                let is_dir = node.node_type == crate::openwrt_heriheri::NodeType::Directory;
+                let is_chunked = node.node_type == crate::openwrt_heriheri::NodeType::File && node.chunks != "1" && !node.chunks.is_empty();
+                let is_physical_folder = is_dir || is_chunked;
+
+                let shared_active_count = tree.nodes.values()
+                    .filter(|n| n.lanzou_id == node.lanzou_id && n.id != id && !n.is_deleted && !n.is_trashed)
+                    .count();
+
+                let physical_restore_success = if shared_active_count > 0 {
+                    true
+                } else {
+                    lanzou.restore_item(&node.lanzou_id, is_physical_folder, &formhash).await.unwrap_or(false)
+                };
+
+                if physical_restore_success {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                    if !is_physical_folder {
+                        let target_lanzou_id = if node.pid == 0 {
+                            tree.root_lanzou_id.clone()
+                        } else {
+                            tree.nodes.get(&node.pid).map(|n| n.lanzou_id.clone()).unwrap_or(tree.root_lanzou_id.clone())
+                        };
+                        let _ = lanzou.move_item(node.lanzou_id.clone(), target_lanzou_id).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+
+                    if let Some(mut_node) = tree.nodes.get_mut(&id) {
+                        mut_node.is_trashed = false;
+                        mut_node.time = now;
+                    }
+                }
+            }
+        }
+        tree.touch();
+        tree.save_local()?;
+        Ok(true)
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn vfs_hard_delete_items(
+    ids: Vec<u64>,
+    state: &AppState,
+) -> Result<bool, String> {
+    let lanzou = state.lanzou.lock().await;
+    let formhash = lanzou.get_formhash().await?;
+    let mut vfs_guard = state.vfs.lock().await;
+
+    if let Some(tree) = vfs_guard.as_mut() {
+        let targets = crate::openwrt_lanzou::get_descendants(tree, &ids, false);
+
+        for &id in &targets {
+            if let Some(node) = tree.nodes.get(&id).cloned() {
+                if !node.is_trashed { continue; }
+                let is_dir = node.node_type == crate::openwrt_heriheri::NodeType::Directory;
+                let is_chunked = node.node_type == crate::openwrt_heriheri::NodeType::File && node.chunks != "1" && !node.chunks.is_empty();
+                let is_physical_folder = is_dir || is_chunked;
+
+                if !node.lanzou_id.starts_with("alien://") {
+                    let shared_surviving_references = tree.nodes.values()
+                        .filter(|n| n.lanzou_id == node.lanzou_id && !n.is_deleted && !targets.contains(&n.id))
+                        .count();
+
+                    if shared_surviving_references == 0 {
+                        let _ = lanzou.hard_delete_item(&node.lanzou_id, is_physical_folder, &formhash).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+            }
+        }
+
+        for id in ids { tree.delete_node(id); }
+        tree.save_local()?;
+        Ok(true)
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn vfs_rename_item(
+    id: u64,
+    new_name: String,
+    state: &AppState,
+) -> Result<bool, String> {
+    let mut vfs_guard = state.vfs.lock().await;
+
+    if let Some(tree) = vfs_guard.as_mut() {
+        if let Some(node) = tree.nodes.get_mut(&id) {
+            node.name = new_name;
+            node.time = crate::openwrt_heriheri::current_timestamp();
+        } else {
+            return Err("Item not found in local VFS".to_string());
+        }
+        tree.touch();
+        tree.save_local()?;
+        Ok(true)
+    } else {
+        Err("VFS Offline".to_string())
+    }
+}
+
+pub async fn vfs_download_file(
+    task_id: String,
+    vfs_id: u64,
+    share_code: Option<String>,
+    local_path: String,
+    resume_offset: usize,
+    total_size: usize,
+    state: &AppState,
+) -> Result<(), String> {
+    let task_flag = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    state.task_ctrl.lock().await.insert(task_id.clone(), task_flag.clone());
+
+    let (chunks_str, share_url, file_pwd) = {
+        if let Some(code) = share_code.filter(|c| !c.is_empty()) {
+            let encoded = code.replace("heri://", "");
+            let json_str = crate::openwrt_lanzou::decrypt_payload(&encoded).map_err(|_| "Failed to decrypt share code".to_string())?;
+            let payload = serde_json::from_str::<SharePayload>(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
+            (payload.c.to_string(), payload.l, Some(payload.p).filter(|p| !p.is_empty()))
+        } else {
+            let vfs_guard = state.vfs.lock().await;
+            let tree = vfs_guard.as_ref().ok_or("VFS Offline")?;
+            let node = tree.nodes.get(&vfs_id).cloned().ok_or("Node not found")?;
+
+            if node.lanzou_id.starts_with("alien://") {
+                let encoded = node.lanzou_id.replace("alien://", "");
+                let json_str = crate::openwrt_lanzou::decrypt_payload(&encoded).map_err(|_| "Failed to decrypt Alien payload".to_string())?;
+                let payload = serde_json::from_str::<SharePayload>(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
+                (node.chunks, payload.l, Some(payload.p).filter(|p| !p.is_empty()))
+            } else {
+                let is_folder = node.node_type == crate::openwrt_heriheri::NodeType::Directory || (node.chunks != "1" && !node.chunks.is_empty());
+                let lanzou = state.lanzou.lock().await;
+                let share_info = lanzou.get_share_info(node.lanzou_id.clone(), is_folder).await?;
+                let url = if let Some(u) = share_info["new_url"].as_str() { u.to_string() } else {
+                    format!("{}/{}", share_info["is_newd"].as_str().unwrap_or(""), share_info["f_id"].as_str().unwrap_or(""))
+                };
+                let pwd = share_info["pwd"].as_str().filter(|p| !p.is_empty()).map(|s| s.to_string());
+                if url.is_empty() || url == "/" { return Err("Could not get share URL".to_string()); }
+                (node.chunks, url, pwd)
+            }
+        }
+    };
+
+    let downloader = state.downloader.lock().await.clone();
+    let req_client = reqwest::Client::builder().user_agent("Mozilla/5.0").build().unwrap();
+    let mut current_loaded = resume_offset;
+
+    // --- TERMINAL PROGRESS BAR SETUP ---
+    let pb = indicatif::ProgressBar::new(total_size as u64);
+    pb.set_style(indicatif::ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+        .unwrap()
+        .progress_chars("#>-"));
+    pb.set_position(current_loaded as u64);
+    // -----------------------------------
+
+    if chunks_str == "1" || chunks_str.is_empty() {
+        let direct_url = downloader.get_lanzou_direct_link(&share_url, file_pwd.as_deref()).await?;
+        let mut req = req_client.get(&direct_url);
+        if resume_offset > 0 { req = req.header("Range", format!("bytes={}-", resume_offset)); }
+        
+        let mut resp = req.send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() { return Err(format!("CDN Error: HTTP {}", resp.status())); }
+
+        if let Some(parent) = std::path::Path::new(&local_path).parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        }
+
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true).write(true).append(resume_offset > 0).truncate(resume_offset == 0)
+            .open(&local_path).await.map_err(|e| e.to_string())?;
+
+        let mut start_time = tokio::time::Instant::now();
+
+        while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+            let flag = task_flag.load(Ordering::SeqCst);
+            if flag == 1 { return Err(format!("PAUSED:{}", current_loaded)); }
+            if flag == 2 { return Err("CANCELLED".to_string()); }
+
+            let limit_kb = state.download_limit.load(Ordering::Relaxed);
+            if limit_kb > 0 {
+                let expected_time = std::time::Duration::from_secs_f64(chunk.len() as f64 / (limit_kb * 1024) as f64);
+                let elapsed = start_time.elapsed();
+                if elapsed < expected_time { tokio::time::sleep(expected_time - elapsed).await; }
+            }
+            start_time = tokio::time::Instant::now();
+
+            use tokio::io::AsyncWriteExt;
+            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            current_loaded += chunk.len();
+            pb.set_position(current_loaded as u64); // Update Terminal Progress
+        }
+    } else {
+        let mut all_files = downloader.get_lanzou_folder_metadata(&share_url, file_pwd.as_deref()).await?;
+
+        let re_legacy = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
+        let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
+        
+        all_files.sort_by(|a, b| {
+            let na = a.get("name_all").and_then(|n| n.as_str()).unwrap_or_else(|| a.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+            let nb = b.get("name_all").and_then(|n| n.as_str()).unwrap_or_else(|| b.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+            let mut get_idx = |name: &str| -> u32 {
+                if let Some(idx) = crate::openwrt_webdav::decrypt_chunk_filename(name) { return idx; }
+                if let Some(caps) = re_covert.captures(name) { return u32::from_str_radix(&caps[1], 16).unwrap_or(0); }
+                if let Some(caps) = re_legacy.captures(name) { return caps[1].parse::<u32>().unwrap_or(0); }
+                0
+            };
+            get_idx(na).cmp(&get_idx(nb))
+        });
+
+        let chunk_size = 100 * 1024 * 1024;
+        let start_chunk_idx = resume_offset / chunk_size;
+        let mut part_resume_offset = resume_offset % chunk_size;
+
+        let parsed_share_url = reqwest::Url::parse(&share_url).unwrap();
+        let base_file_url = format!("{}://{}", parsed_share_url.scheme(), parsed_share_url.host_str().unwrap());
+
+        let mut next_resolve_task: Option<tokio::task::JoinHandle<Result<String, String>>> = None;
+
+        for i in start_chunk_idx..all_files.len() {
+            let file_id = all_files[i].get("id").and_then(|id| id.as_str()).unwrap_or("");
+            if file_id.is_empty() { return Err("Chunk missing Lanzou ID".into()); }
+            
+            let file_share_url = format!("{}/{}", base_file_url, file_id);
+            let mut retry_refresh = 0;
+            let mut direct_url_str = String::new();
+
+            let mut resp = loop {
+                if direct_url_str.is_empty() {
+                    if let Some(task) = next_resolve_task.take() {
+                        direct_url_str = task.await.map_err(|e| e.to_string())??;
+                    } else {
+                        direct_url_str = downloader.get_lanzou_direct_link(&file_share_url, file_pwd.as_deref()).await?;
+                    }
+                }
+
+                if next_resolve_task.is_none() && i + 1 < all_files.len() {
+                    let dl_clone = downloader.clone();
+                    let next_id = all_files[i + 1].get("id").and_then(|id| id.as_str()).unwrap_or("");
+                    let next_share_url = format!("{}/{}", base_file_url, next_id);
+                    let pwd_clone = file_pwd.clone();
+                    next_resolve_task = Some(tokio::spawn(async move {
+                        dl_clone.get_lanzou_direct_link(&next_share_url, pwd_clone.as_deref()).await
+                    }));
+                }
+
+                let mut req = req_client.get(&direct_url_str);
+                if part_resume_offset > 0 { req = req.header("Range", format!("bytes={}-", part_resume_offset)); }
+                let r = req.send().await.map_err(|e| e.to_string())?;
+
+                let content_type = r.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+                if content_type.contains("text/html") {
+                    retry_refresh += 1;
+                    if retry_refresh > 3 { return Err("CDN links persistently expired".to_string()); }
+                    direct_url_str = String::new();
+                    if let Some(task) = next_resolve_task.take() { task.abort(); }
+                    continue;
+                }
+                if !r.status().is_success() { return Err(format!("CDN Error on Chunk {}: HTTP {}", i + 1, r.status())); }
+                break r;
+            };
+
+            if let Some(parent) = std::path::Path::new(&local_path).parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+            }
+
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true).write(true).append(current_loaded > 0).truncate(current_loaded == 0)
+                .open(&local_path).await.map_err(|e| e.to_string())?;
+
+            let mut start_time = tokio::time::Instant::now();
+
+            while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+                let flag = task_flag.load(Ordering::SeqCst);
+                if flag == 1 { return Err(format!("PAUSED:{}", current_loaded)); }
+                if flag == 2 { return Err("CANCELLED".to_string()); }
+
+                let limit_kb = state.download_limit.load(Ordering::Relaxed);
+                if limit_kb > 0 {
+                    let expected_time = std::time::Duration::from_secs_f64(chunk.len() as f64 / (limit_kb * 1024) as f64);
+                    let elapsed = start_time.elapsed();
+                    if elapsed < expected_time { tokio::time::sleep(expected_time - elapsed).await; }
+                }
+                start_time = tokio::time::Instant::now();
+
+                use tokio::io::AsyncWriteExt;
+                file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+                current_loaded += chunk.len();
+                pb.set_position(current_loaded as u64); // Update Terminal Progress
+            }
+            part_resume_offset = 0;
+        }
+    }
+    
+    pb.finish_with_message("Download Complete!");
+    state.task_ctrl.lock().await.remove(&task_id);
+    Ok(())
+}
+
+pub async fn vfs_sync_pull(state: &AppState) -> Result<bool, String> {
+    let _guard = state.sync_lock.lock().await;
+    crate::openwrt_lanzou::execute_sync_pull(&state).await
+}
+
+pub async fn vfs_sync_push(
+    state: &AppState,
+) -> Result<bool, String> {
+    let _guard = state.sync_lock.lock().await;
+    let _ = crate::openwrt_lanzou::execute_sync_pull(&state).await;
+
+    let (lanzou, tsv_content, new_timestamp) = {
+        let lanzou_guard = state.lanzou.lock().await;
+        let vfs_guard = state.vfs.lock().await;
+        let tree = vfs_guard.as_ref().ok_or("VFS Offline")?;
+        (lanzou_guard.clone(), tree.to_tsv(), tree.last_modified)
+    };
+
+    let sync_folder_id = crate::openwrt_lanzou::get_sync_folder_id(&lanzou).await?;
+    let tsv_bytes = bytes::Bytes::from(tsv_content.into_bytes());
+    let total_size = tsv_bytes.len();
+    let phone = state.current_phone.lock().await.clone();
+    let file_prefix = if phone.is_empty() {
+        "heriheri_tree_".to_string()
+    } else {
+        format!("heriheri_tree_{}_", phone)
+    };
+    let file_name = format!("{}{}.txt", file_prefix, new_timestamp);
+
+    println!("[SYNC] Pushing new state to cloud: {}", file_name);
+
+    let dummy_flag = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    // NOTE: 'app' parameter removed here
+    let upload_res = lanzou
+        .upload_file_direct(
+            tsv_bytes,
+            file_name.clone(),
+            sync_folder_id.clone(),
+            "SYNC_TASK".to_string(),
+            0,
+            total_size,
+            dummy_flag,
+            std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            0,
+        )
+        .await;
+
+    let new_file_id = match upload_res {
+        Ok(id) => id,
+        Err(e) => return Err(format!("Sync Push Failed: {}", e)),
+    };
+
+    let files_after = lanzou.list_files_by_id(&sync_folder_id).await?;
+    for f in files_after {
+        if let Some(name) = f["name"].as_str() {
+            if name.starts_with(&file_prefix) {
+                if let Some(old_id) = f["id"].as_str() {
+                    if old_id != new_file_id {
+                        let _ = lanzou.delete_file(old_id.to_string()).await;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+pub async fn vfs_update_speed_limits(
+    upload_limit: u32,
+    download_limit: u32,
+    state: &AppState,
+) -> Result<(), String> {
+    state.upload_limit.store(upload_limit, std::sync::atomic::Ordering::SeqCst);
+    state.download_limit.store(download_limit, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+pub async fn vfs_generate_share_code(
+    vfs_id: u64,
+    state: &AppState,
+) -> Result<String, String> {
+    let (node, lanzou) = {
+        let vfs_guard = state.vfs.lock().await;
+        let tree = vfs_guard.as_ref().ok_or("VFS Offline")?;
+        let node = tree.nodes.get(&vfs_id).cloned().ok_or("Node not found")?;
+        let lanzou = state.lanzou.lock().await.clone();
+        (node, lanzou)
+    };
+
+    if node.node_type == crate::openwrt_heriheri::NodeType::Directory {
+        return Err("Renting whole folders is not currently supported.".into());
+    }
+
+    if node.lanzou_id.starts_with("alien://") {
+        let encoded = node.lanzou_id.replace("alien://", "");
+        return Ok(format!("heri://{}", encoded)); 
+    }
+
+    let is_chunked = node.chunks != "1" && !node.chunks.is_empty();
+    let share_info = lanzou.get_share_info(node.lanzou_id.clone(), is_chunked).await?;
+
+    let url = if let Some(u) = share_info["new_url"].as_str() { u.to_string() } else {
+        format!("{}/{}", share_info["is_newd"].as_str().unwrap_or(""), share_info["f_id"].as_str().unwrap_or(""))
+    };
+
+    if url.is_empty() || url == "/" { return Err("Could not generate Lanzou link".into()); }
+    let pwd = share_info["pwd"].as_str().unwrap_or("").to_string();
+    let chunks_u32 = node.chunks.parse::<u32>().unwrap_or(1);
+
+    let payload = SharePayload {
+        n: node.name, m: node.md5, s: node.size, c: chunks_u32, l: url, p: pwd,
+    };
+
+    let json_str = serde_json::to_string(&payload).unwrap();
+    let encoded = crate::openwrt_lanzou::encrypt_payload(&json_str);
+    Ok(format!("heri://{}", encoded))
+}
+
+pub fn vfs_resolve_share_code(code: String) -> Result<crate::openwrt_lanzou::ResolveResult, String> {
+    if !code.starts_with("heri://") { return Err("Invalid share code format.".into()); }
+    let encoded = code.replace("heri://", "");
+    let json_str = crate::openwrt_lanzou::decrypt_payload(&encoded)?;
+    let payload: SharePayload = serde_json::from_str(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
+
+    Ok(crate::openwrt_lanzou::ResolveResult {
+        name: payload.n, size: payload.s, md5: payload.m, chunks: payload.c, is_folder: false,
+    })
+}
+
+pub async fn vfs_rent_item(
+    code: String,
+    target_pid: u64,
+    state: &AppState,
+) -> Result<(), String> {
+    if !code.starts_with("heri://") { return Err("Invalid share code format.".into()); }
+    let encoded = code.replace("heri://", "");
+    let json_str = crate::openwrt_lanzou::decrypt_payload(&encoded)?;
+    let payload: SharePayload = serde_json::from_str(&json_str).map_err(|_| "Failed to parse JSON".to_string())?;
+
+    let mut vfs_guard = state.vfs.lock().await;
+    let tree = vfs_guard.as_mut().ok_or("VFS Offline")?;
+
+    if tree.nodes.values().any(|n| n.pid == target_pid && n.md5 == payload.m && !n.is_deleted && !n.is_trashed) {
+        return Ok(()); 
+    }
+
+    let physical_copy = tree.nodes.values().find(|n| {
+        n.md5 == payload.m && n.node_type == crate::openwrt_heriheri::NodeType::File && !n.is_deleted && !n.is_trashed && !n.lanzou_id.starts_with("alien://")
+    }).map(|n| (n.lanzou_id.clone(), n.chunks.clone()));
+
+    let ext = std::path::Path::new(&payload.n).extension().unwrap_or_default().to_string_lossy().to_string();
+
+    if let Some((phys_id, phys_chunks)) = physical_copy {
+        let chunks = phys_chunks.parse::<u32>().unwrap_or(1);
+        tree.add_file(target_pid, &payload.n, &phys_id, &payload.s, &payload.m, &ext, chunks);
+    } else {
+        let alien_id = format!("alien://{}", encoded);
+        tree.add_file(target_pid, &payload.n, &alien_id, &payload.s, &payload.m, &ext, payload.c);
+    }
+    tree.save_local()?;
+    Ok(())
+}
+
+pub async fn vfs_search(
+    query: String,
+    state: &AppState,
+) -> Result<Vec<serde_json::Value>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    
+    let vfs_guard = state.vfs.lock().await;
+    let tree = vfs_guard.as_ref().ok_or("VFS Offline")?;
+    let q = query.to_lowercase();
+    let mut results = Vec::new();
+
+    for node in tree.nodes.values() {
+        if !node.is_deleted && !node.is_trashed {
+            let decoded_name = STANDARD.decode(&node.name)
+                .ok().and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_else(|| node.name.clone());
+
+            let is_match = decoded_name.to_lowercase().contains(&q)
+                || node.md5.to_lowercase().contains(&q)
+                || node.lanzou_id.to_lowercase().contains(&q);
+
+            if is_match {
+                let mut path_parts = Vec::new();
+                let mut current_pid = node.pid;
+                while let Some(parent) = tree.nodes.get(&current_pid) {
+                    let parent_name = STANDARD.decode(&parent.name)
+                        .ok().and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_else(|| parent.name.clone());
+                    path_parts.push(parent_name);
+                    current_pid = parent.pid;
+                }
+                path_parts.push("All Files".to_string());
+                path_parts.reverse();
+
+                let mut json_node = serde_json::to_value(node).map_err(|e| e.to_string())?;
+                json_node["name"] = serde_json::Value::String(decoded_name);
+                json_node["path_str"] = serde_json::Value::String(path_parts.join(" > "));
+                results.push(json_node);
+            }
+        }
+    }
+    Ok(results)
+}
+
+pub fn vfs_update_blacklist(blacklist: String) {
+    if let Ok(mut lock) = UPLOAD_BLACKLIST.write() {
+        *lock = blacklist.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+}
