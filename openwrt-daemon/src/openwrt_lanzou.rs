@@ -17,8 +17,10 @@ use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use std::sync::RwLock;
 
 const BASE_URL: &str = "https://up.woozooo.com";
+static UPLOAD_BLACKLIST: RwLock<Vec<String>> = RwLock::new(Vec::new());
 
 #[derive(Clone)]
 pub struct LanzouCloud {

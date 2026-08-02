@@ -95,13 +95,13 @@ pub enum NodeType {
 }
 
 impl NodeType {
-    fn from_str(s: &str) -> Self {
+    pub fn from_str(s: &str) -> Self {
         match s {
             "D" => NodeType::Directory,
             _ => NodeType::File,
         }
     }
-    fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         match self {
             NodeType::Directory => "D",
             NodeType::File => "F",
