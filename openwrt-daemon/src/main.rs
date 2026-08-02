@@ -28,6 +28,12 @@ struct Cli {
 enum Commands {
     /// Start the WebDAV, MCP, and WebUI Daemon (Default)
     Daemon,
+
+    /// Login to your Lanzou Cloud account
+    Login { phone: String, password: String },
+
+    /// Logout and clear saved credentials
+    Logout,
     
     /// List files in the current or target directory
     Ls { #[arg(default_value = ".")] path: String },
@@ -217,6 +223,39 @@ async fn main() {
     let cwd_id: u64 = std::fs::read_to_string(&cwd_file).unwrap_or_default().trim().parse().unwrap_or(0);
 
     match cli.command {
+        Some(Commands::Login { phone, password }) => {
+            println!("[AUTH] Attempting to log in as {}...", phone);
+            match openwrt_lanzou::login(phone.clone(), password.clone(), &state).await {
+                Ok(_) => {
+                    // Save credentials to persistent config
+                    let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
+                    let mut config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or(serde_json::json!({}));
+                    config["lanzou_phone"] = serde_json::Value::String(phone.clone());
+                    config["lanzou_pass"] = serde_json::Value::String(password.clone());
+                    let _ = std::fs::write("heriheri_config.json", serde_json::to_string_pretty(&config).unwrap_or_default());
+
+                    // Bootstrap the VFS and Sync for the first time
+                    if let Err(e) = openwrt_lanzou::init_vfs_root(phone, &state).await {
+                        println!("[ERROR] VFS Init failed: {}", e);
+                    } else {
+                        let _ = openwrt_lanzou::vfs_sync_pull(&state).await;
+                        println!("\n[SUCCESS] Login and Sync complete! You can now use the CLI.");
+                    }
+                }
+                Err(e) => println!("[ERROR] Login failed: {}", e),
+            }
+        }
+        Some(Commands::Logout) => {
+            let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
+            let mut config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or(serde_json::json!({}));
+            config["lanzou_phone"] = serde_json::Value::String("".to_string());
+            config["lanzou_pass"] = serde_json::Value::String("".to_string());
+            let _ = std::fs::write("heriheri_config.json", serde_json::to_string_pretty(&config).unwrap_or_default());
+            
+            // Wipe the CWD tracker state
+            let _ = std::fs::remove_file(&cwd_file);
+            println!("[SUCCESS] Logged out successfully. Credentials cleared.");
+        }
         Some(Commands::Pwd) => {
             println!("{}", get_full_path(&state, cwd_id).await);
         }
