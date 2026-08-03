@@ -46,14 +46,12 @@ enum Commands {
     
     /// Upload local files to the cloud
     Upload { 
-        #[arg(required = true)] file_paths: Vec<String>, 
-        #[arg(short, long, default_value = ".")] dest_path: String 
+        #[arg(required = true)] args: Vec<String>, 
     },
     
     /// Download files from the cloud
     Download { 
-        #[arg(required = true)] paths: Vec<String>, 
-        #[arg(short, long, default_value = ".")] dest_path: String 
+        #[arg(required = true)] args: Vec<String>, 
     },
     
     /// Move files or folders to the recycle bin
@@ -66,7 +64,7 @@ enum Commands {
     Rename { path: String, new_name: String },
     
     /// Move items to another directory
-    Mv { #[arg(required = true)] paths: Vec<String>, #[arg(short, long, default_value = ".")] target: String },
+    Mv { #[arg(required = true)] args: Vec<String> },
     
     /// List all items currently in the recycle bin
     Bin,
@@ -205,15 +203,17 @@ async fn execute_command(
                 Err(e) => println!("[ERROR] {}", e),
             }
         }
-        Some(Commands::Upload { file_paths, dest_path }) => {
+        Some(Commands::Upload { mut args }) => {
+            let dest_path = if args.len() > 1 { args.pop().unwrap() } else { ".".to_string() };
+            
             match resolve_path(state, *cwd_id, &dest_path).await {
                 Ok(pid) => {
-                    for file_path in file_paths {
-                        // Expand ~ to the user's HOME directory
-                        let expanded_path = if file_path.starts_with("~/") {
+                    for file_path in args {
+                        // Safely expand Unix HOME directory paths
+                        let expanded_path = if file_path.starts_with("~/") || file_path == "~" {
                             file_path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
                         } else {
-                            file_path.clone()
+                            file_path
                         };
                         
                         let task_id = format!("cli_up_{}", crate::openwrt_heriheri::current_timestamp());
@@ -227,17 +227,20 @@ async fn execute_command(
                 Err(e) => println!("[ERROR] Invalid destination: {}", e),
             }
         }
-        Some(Commands::Download { paths, dest_path }) => {
-            let expanded_dest = if dest_path.starts_with("~/") {
+        Some(Commands::Download { mut args }) => {
+            // UNIX Behavior: Last argument is destination, everything else is VFS files to download
+            let dest_path = if args.len() > 1 { args.pop().unwrap() } else { ".".to_string() };
+            
+            let expanded_dest = if dest_path.starts_with("~/") || dest_path == "~" {
                 dest_path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
             } else {
-                dest_path.clone()
+                dest_path
             };
 
-            // If downloading multiple files, force destination to be treated as a directory
-            let is_dir_target = std::path::Path::new(&expanded_dest).is_dir() || paths.len() > 1;
+            // If downloading multiple files, OR destination already exists as a folder, append file name
+            let is_dir_target = std::path::Path::new(&expanded_dest).is_dir() || args.len() > 1;
 
-            for path in paths {
+            for path in args {
                 match resolve_path(state, *cwd_id, &path).await {
                     Ok(vfs_id) => {
                         let original_name = {
@@ -307,11 +310,12 @@ async fn execute_command(
                 Err(e) => println!("[ERROR] Path not found: {}", e),
             }
         }
-        Some(Commands::Mv { paths, target }) => {
+        Some(Commands::Mv { mut args }) => {
+            let target = if args.len() > 1 { args.pop().unwrap() } else { ".".to_string() };
             match resolve_path(state, *cwd_id, &target).await {
                 Ok(target_pid) => {
                     let mut ids = Vec::new();
-                    for p in paths {
+                    for p in args {
                         match resolve_path(state, *cwd_id, &p).await {
                             Ok(id) => ids.push(id),
                             Err(e) => println!("[ERROR] Skipping '{}': {}", p, e),
