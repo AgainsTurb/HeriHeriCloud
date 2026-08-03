@@ -134,112 +134,28 @@ async fn get_full_path(state: &AppState, id: u64) -> String {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    // Parse CLI arguments (this automatically handles --help!)
-    let cli = Cli::parse();
-
-    println!("==========================================");
-    println!(" HeriHeriCloud OpenWRT WebDAV Daemon");
-    println!("==========================================");
-
-    // 1. Read persistent config directly to bypass environment variables
-    let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
-    let config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or(serde_json::json!({}));
-    let phone = config["lanzou_phone"].as_str().unwrap_or("").to_string();
-    let password = config["lanzou_pass"].as_str().unwrap_or("").to_string();
-
-    // 2. Initialize Core Cloud Services
-    let lanzou = Arc::new(Mutex::new(LanzouCloud::new()));
-    let downloader = Arc::new(Mutex::new(LanzouDownloader::new()));
-    let vfs_tree = Arc::new(Mutex::new(None));
-
-    // 3. Perform Headless Login ONLY if credentials exist in config
-    if !phone.is_empty() && !password.is_empty() {
-        println!("[AUTH] Logging into Lanzou Cloud with {}...", phone);
-        let mut lanzou_guard = lanzou.lock().await;
-        
-        if let Err(e) = lanzou_guard.login(&phone, &password).await {
-            println!("[AUTH] Login failed: {}", e);
-        } else {
-            println!("[AUTH] Login successful!");
-            
-            // 4. Initialize VFS if login succeeded
-            println!("[VFS] Locating Virtual File System...");
-            if let Ok((root_id, deeper_id)) = lanzou_guard.init_vfs_root().await {
-                let file_name = format!("heriheri_tree_{}.txt", phone);
-                let tree_path = std::path::PathBuf::from(format!("/tmp/{}", file_name));
-                
-                let tree = match VfsTree::load_local(tree_path.clone()) {
-                    Ok(mut t) => {
-                        if t.deeperdir_lanzou_id.is_empty() {
-                            t.deeperdir_lanzou_id = deeper_id;
-                            let _ = t.save_local();
-                        }
-                        println!("[VFS] Loaded existing local tree from RAM (Timestamp: {})", t.last_modified);
-                        t
-                    }
-                    Err(_) => {
-                        println!("[VFS] No local tree found in RAM. Creating fresh VFS...");
-                        let t = VfsTree::new(root_id, deeper_id, tree_path);
-                        let _ = t.save_local();
-                        t
-                    }
-                };
-                *vfs_tree.lock().await = Some(tree);
-            }
-        }
-    } else {
-        println!("[AUTH] No account configured! Please visit the WebGUI to sign in.");
-    }
-
-    // 5. Build the Application State
-    let state = AppState {
-        lanzou,
-        downloader,
-        vfs: vfs_tree,
-        pid_stack: Arc::new(Mutex::new(vec![0])),
-        task_ctrl: Arc::new(Mutex::new(HashMap::new())),
-        sync_lock: Arc::new(Mutex::new(())),
-        upload_limit: Arc::new(AtomicU32::new(0)),
-        download_limit: Arc::new(AtomicU32::new(0)),
-        current_phone: Arc::new(Mutex::new(phone)),
-    };
-
-    // 6. Perform Sync Pull if VFS was successfully initialized
-    if state.vfs.lock().await.is_some() {
-        println!("[SYNC] Pulling latest file tree from the cloud...");
-        match openwrt_lanzou::execute_sync_pull(&state).await {
-            Ok(true) => println!("[SYNC] File tree successfully updated!"),
-            Ok(false) => println!("[SYNC] File tree is already up to date."),
-            Err(e) => println!("[SYNC] Warning: Could not pull latest tree: {}", e),
-        }
-    }
-
-    // =====================================================================
-    // 7. CLI COMMAND ROUTER
-    // =====================================================================
-    let cwd_file = std::env::temp_dir().join("heriheri_cwd.txt");
-    let cwd_id: u64 = std::fs::read_to_string(&cwd_file).unwrap_or_default().trim().parse().unwrap_or(0);
-
-    match cli.command {
+async fn execute_command(
+    command: Option<Commands>, 
+    state: &AppState, 
+    cwd_file: &std::path::PathBuf, 
+    cwd_id: &mut u64
+) {
+    match command {
         Some(Commands::Login { phone, password }) => {
             println!("[AUTH] Attempting to log in as {}...", phone);
-            match openwrt_lanzou::login(phone.clone(), password.clone(), &state).await {
+            match openwrt_lanzou::login(phone.clone(), password.clone(), state).await {
                 Ok(_) => {
-                    // Save credentials to persistent config
                     let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
                     let mut config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or(serde_json::json!({}));
                     config["lanzou_phone"] = serde_json::Value::String(phone.clone());
                     config["lanzou_pass"] = serde_json::Value::String(password.clone());
                     let _ = std::fs::write("heriheri_config.json", serde_json::to_string_pretty(&config).unwrap_or_default());
 
-                    // Bootstrap the VFS and Sync for the first time
-                    if let Err(e) = openwrt_lanzou::init_vfs_root(phone, &state).await {
+                    if let Err(e) = openwrt_lanzou::init_vfs_root(phone, state).await {
                         println!("[ERROR] VFS Init failed: {}", e);
                     } else {
-                        let _ = openwrt_lanzou::vfs_sync_pull(&state).await;
-                        println!("\n[SUCCESS] Login and Sync complete! You can now use the CLI.");
+                        let _ = openwrt_lanzou::vfs_sync_pull(state).await;
+                        println!("\n[SUCCESS] Login and Sync complete!");
                     }
                 }
                 Err(e) => println!("[ERROR] Login failed: {}", e),
@@ -251,28 +167,27 @@ async fn main() {
             config["lanzou_phone"] = serde_json::Value::String("".to_string());
             config["lanzou_pass"] = serde_json::Value::String("".to_string());
             let _ = std::fs::write("heriheri_config.json", serde_json::to_string_pretty(&config).unwrap_or_default());
-            
-            // Wipe the CWD tracker state
-            let _ = std::fs::remove_file(&cwd_file);
-            println!("[SUCCESS] Logged out successfully. Credentials cleared.");
+            let _ = std::fs::remove_file(cwd_file);
+            *cwd_id = 0;
+            println!("[SUCCESS] Logged out successfully.");
         }
         Some(Commands::Pwd) => {
-            println!("{}", get_full_path(&state, cwd_id).await);
+            println!("{}", get_full_path(state, *cwd_id).await);
         }
         Some(Commands::Cd { path }) => {
-            match resolve_path(&state, cwd_id, &path).await {
+            match resolve_path(state, *cwd_id, &path).await {
                 Ok(pid) => {
-                    let _ = std::fs::write(&cwd_file, pid.to_string());
-                    println!("{}", get_full_path(&state, pid).await);
+                    let _ = std::fs::write(cwd_file, pid.to_string());
+                    *cwd_id = pid; // Update memory state instantly
                 }
                 Err(e) => println!("[ERROR] {}", e),
             }
         }
         Some(Commands::Ls { path }) => {
-            match resolve_path(&state, cwd_id, &path).await {
+            match resolve_path(state, *cwd_id, &path).await {
                 Ok(pid) => {
-                    let _ = openwrt_lanzou::vfs_enter_folder(pid, &state).await;
-                    if let Ok(nodes) = openwrt_lanzou::vfs_list_dir(&state).await {
+                    let _ = openwrt_lanzou::vfs_enter_folder(pid, state).await;
+                    if let Ok(nodes) = openwrt_lanzou::vfs_list_dir(state).await {
                         println!("\n{:<12} | {:<5} | {:<12} | {}", "VFS ID", "TYPE", "SIZE", "NAME");
                         println!("{:-<12}-+-{:-<5}-+-{:-<12}-+-{:-<40}", "", "", "", "");
                         for n in nodes {
@@ -285,10 +200,10 @@ async fn main() {
             }
         }
         Some(Commands::Upload { file_path, dest_path }) => {
-            match resolve_path(&state, cwd_id, &dest_path).await {
+            match resolve_path(state, *cwd_id, &dest_path).await {
                 Ok(pid) => {
                     let task_id = format!("cli_up_{}", crate::openwrt_heriheri::current_timestamp());
-                    match openwrt_lanzou::vfs_upload_file(file_path, task_id, pid, "".to_string(), 0, &state).await {
+                    match openwrt_lanzou::vfs_upload_file(file_path, task_id, pid, "".to_string(), 0, state).await {
                         Ok(_) => println!("\n[SUCCESS] Upload complete!"),
                         Err(e) => println!("\n[ERROR] Upload failed: {}", e),
                     }
@@ -297,10 +212,10 @@ async fn main() {
             }
         }
         Some(Commands::Download { path, dest_path }) => {
-            match resolve_path(&state, cwd_id, &path).await {
+            match resolve_path(state, *cwd_id, &path).await {
                 Ok(vfs_id) => {
                     let task_id = format!("cli_down_{}", crate::openwrt_heriheri::current_timestamp());
-                    match openwrt_lanzou::vfs_download_file(task_id, vfs_id, None, dest_path, 0, 0, &state).await {
+                    match openwrt_lanzou::vfs_download_file(task_id, vfs_id, None, dest_path, 0, 0, state).await {
                         Ok(_) => println!("\n[SUCCESS] Download complete!"),
                         Err(e) => println!("\n[ERROR] Download failed: {}", e),
                     }
@@ -311,13 +226,13 @@ async fn main() {
         Some(Commands::Rm { paths }) => {
             let mut ids = Vec::new();
             for p in paths {
-                match resolve_path(&state, cwd_id, &p).await {
+                match resolve_path(state, *cwd_id, &p).await {
                     Ok(id) => ids.push(id),
                     Err(e) => println!("[ERROR] Skipping '{}': {}", p, e),
                 }
             }
             if !ids.is_empty() {
-                match openwrt_lanzou::vfs_batch_delete(ids, &state).await {
+                match openwrt_lanzou::vfs_batch_delete(ids, state).await {
                     Ok(_) => println!("[SUCCESS] Items moved to Trash Bin."),
                     Err(e) => println!("[ERROR] Delete failed: {}", e),
                 }
@@ -329,10 +244,10 @@ async fn main() {
             if parent_str.is_empty() { parent_str = ".".to_string(); }
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
             
-            match resolve_path(&state, cwd_id, &parent_str).await {
+            match resolve_path(state, *cwd_id, &parent_str).await {
                 Ok(pid) => {
-                    let _ = openwrt_lanzou::vfs_enter_folder(pid, &state).await;
-                    match openwrt_lanzou::vfs_create_folder(name.clone(), "".to_string(), &state).await {
+                    let _ = openwrt_lanzou::vfs_enter_folder(pid, state).await;
+                    match openwrt_lanzou::vfs_create_folder(name.clone(), "".to_string(), state).await {
                         Ok(_) => println!("[SUCCESS] Folder '{}' created successfully!", name),
                         Err(e) => println!("[ERROR] Failed to create folder: {}", e),
                     }
@@ -341,9 +256,9 @@ async fn main() {
             }
         }
         Some(Commands::Rename { path, new_name }) => {
-            match resolve_path(&state, cwd_id, &path).await {
+            match resolve_path(state, *cwd_id, &path).await {
                 Ok(vfs_id) => {
-                    match openwrt_lanzou::vfs_rename_item(vfs_id, new_name.clone(), &state).await {
+                    match openwrt_lanzou::vfs_rename_item(vfs_id, new_name.clone(), state).await {
                         Ok(_) => println!("[SUCCESS] Item renamed to '{}'", new_name),
                         Err(e) => println!("[ERROR] Rename failed: {}", e),
                     }
@@ -352,17 +267,17 @@ async fn main() {
             }
         }
         Some(Commands::Mv { paths, target }) => {
-            match resolve_path(&state, cwd_id, &target).await {
+            match resolve_path(state, *cwd_id, &target).await {
                 Ok(target_pid) => {
                     let mut ids = Vec::new();
                     for p in paths {
-                        match resolve_path(&state, cwd_id, &p).await {
+                        match resolve_path(state, *cwd_id, &p).await {
                             Ok(id) => ids.push(id),
                             Err(e) => println!("[ERROR] Skipping '{}': {}", p, e),
                         }
                     }
                     if !ids.is_empty() {
-                        match openwrt_lanzou::vfs_move_items(ids, target_pid, &state).await {
+                        match openwrt_lanzou::vfs_move_items(ids, target_pid, state).await {
                             Ok(_) => println!("[SUCCESS] Items moved to {}", target),
                             Err(e) => println!("[ERROR] Move failed: {}", e),
                         }
@@ -372,7 +287,7 @@ async fn main() {
             }
         }
         Some(Commands::Bin) => {
-            match openwrt_lanzou::vfs_list_bin(&state).await {
+            match openwrt_lanzou::vfs_list_bin(state).await {
                 Ok(nodes) => {
                     println!("\n{:<12} | {:<5} | {:<12} | {}", "VFS ID", "TYPE", "SIZE", "NAME");
                     println!("{:-<12}-+-{:-<5}-+-{:-<12}-+-{:-<40}", "", "", "", "");
@@ -383,21 +298,21 @@ async fn main() {
             }
         }
         Some(Commands::Restore { vfs_ids }) => {
-            match openwrt_lanzou::vfs_restore_items(vfs_ids, &state).await {
+            match openwrt_lanzou::vfs_restore_items(vfs_ids, state).await {
                 Ok(_) => println!("[SUCCESS] Items restored successfully!"),
                 Err(e) => println!("[ERROR] Restore failed: {}", e),
             }
         }
         Some(Commands::HardDelete { vfs_ids }) => {
-            match openwrt_lanzou::vfs_hard_delete_items(vfs_ids, &state).await {
+            match openwrt_lanzou::vfs_hard_delete_items(vfs_ids, state).await {
                 Ok(_) => println!("[SUCCESS] Items permanently deleted!"),
                 Err(e) => println!("[ERROR] Hard delete failed: {}", e),
             }
         }
         Some(Commands::Share { path }) => {
-            match resolve_path(&state, cwd_id, &path).await {
+            match resolve_path(state, *cwd_id, &path).await {
                 Ok(id) => {
-                    match openwrt_lanzou::vfs_generate_share_code(id, &state).await {
+                    match openwrt_lanzou::vfs_generate_share_code(id, state).await {
                         Ok(code) => println!("\n[SHARE CODE]\n{}", code),
                         Err(e) => println!("[ERROR] Failed to generate share code: {}", e),
                     }
@@ -406,9 +321,9 @@ async fn main() {
             }
         }
         Some(Commands::Rent { code, target_path }) => {
-            match resolve_path(&state, cwd_id, &target_path).await {
+            match resolve_path(state, *cwd_id, &target_path).await {
                 Ok(pid) => {
-                    match openwrt_lanzou::vfs_rent_item(code, pid, &state).await {
+                    match openwrt_lanzou::vfs_rent_item(code, pid, state).await {
                         Ok(_) => println!("[SUCCESS] Shared item saved to your cloud!"),
                         Err(e) => println!("[ERROR] Failed to save shared item: {}", e),
                     }
@@ -417,7 +332,7 @@ async fn main() {
             }
         }
         Some(Commands::Search { query }) => {
-            match openwrt_lanzou::vfs_search(query, &state).await {
+            match openwrt_lanzou::vfs_search(query, state).await {
                 Ok(results) => {
                     println!("\n{:<12} | {}", "VFS ID", "PATH");
                     println!("{:-<12}-+-{:-<50}", "", "");
@@ -432,13 +347,114 @@ async fn main() {
             }
         }
         Some(Commands::Sync) => {
-            match openwrt_lanzou::vfs_sync_push(&state).await {
+            match openwrt_lanzou::vfs_sync_push(state).await {
                 Ok(_) => println!("[SUCCESS] Local tree forcefully pushed to cloud!"),
                 Err(e) => println!("[ERROR] Sync failed: {}", e),
             }
         }
         Some(Commands::Daemon) | None => {
-            openwrt_webdav::run_server(state).await;
+            openwrt_webdav::run_server(state.clone()).await;
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
+    let config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or(serde_json::json!({}));
+    let phone = config["lanzou_phone"].as_str().unwrap_or("").to_string();
+    let password = config["lanzou_pass"].as_str().unwrap_or("").to_string();
+
+    let lanzou = Arc::new(Mutex::new(LanzouCloud::new()));
+    let downloader = Arc::new(Mutex::new(LanzouDownloader::new()));
+    let vfs_tree = Arc::new(Mutex::new(None));
+
+    if !phone.is_empty() && !password.is_empty() {
+        let mut lanzou_guard = lanzou.lock().await;
+        if lanzou_guard.login(&phone, &password).await.is_ok() {
+            if let Ok((root_id, deeper_id)) = lanzou_guard.init_vfs_root().await {
+                let file_name = format!("heriheri_tree_{}.txt", phone);
+                let tree_path = std::path::PathBuf::from(format!("/tmp/{}", file_name));
+                let tree = match VfsTree::load_local(tree_path.clone()) {
+                    Ok(mut t) => {
+                        if t.deeperdir_lanzou_id.is_empty() {
+                            t.deeperdir_lanzou_id = deeper_id;
+                            let _ = t.save_local();
+                        }
+                        t
+                    }
+                    Err(_) => {
+                        let t = VfsTree::new(root_id, deeper_id, tree_path);
+                        let _ = t.save_local();
+                        t
+                    }
+                };
+                *vfs_tree.lock().await = Some(tree);
+            }
+        }
+    }
+
+    let state = AppState {
+        lanzou, downloader, vfs: vfs_tree,
+        pid_stack: Arc::new(Mutex::new(vec![0])),
+        task_ctrl: Arc::new(Mutex::new(HashMap::new())),
+        sync_lock: Arc::new(Mutex::new(())),
+        upload_limit: Arc::new(AtomicU32::new(0)),
+        download_limit: Arc::new(AtomicU32::new(0)),
+        current_phone: Arc::new(Mutex::new(phone)),
+    };
+
+    if state.vfs.lock().await.is_some() {
+        let _ = openwrt_lanzou::execute_sync_pull(&state).await;
+    }
+
+    let cwd_file = std::env::temp_dir().join("heriheri_cwd.txt");
+    let mut cwd_id: u64 = std::fs::read_to_string(&cwd_file).unwrap_or_default().trim().parse().unwrap_or(0);
+
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() > 1 {
+        // If they type `./heriheri-cli daemon` or `./heriheri-cli ls`, run just that command and exit
+        let cli = Cli::parse();
+        execute_command(cli.command, &state, &cwd_file, &mut cwd_id).await;
+    } else {
+        // If they just type `./heriheri-cli`, enter INTERACTIVE SHELL MODE!
+        use std::io::{self, Write};
+        
+        println!("==========================================");
+        println!(" HeriHeriCloud Universal CLI Shell Active ");
+        println!("==========================================");
+        println!("Type 'help' to see all commands. Type 'exit' to quit.\n");
+
+        loop {
+            // Print the custom prompt with the current VFS path
+            let path_str = get_full_path(&state, cwd_id).await;
+            print!("heriheri:{} > ", path_str);
+            io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            if io::stdin().read_line(&mut input).is_err() { break; }
+            let input = input.trim();
+            
+            if input.is_empty() { continue; }
+            if input == "exit" || input == "quit" { 
+                println!("Goodbye!");
+                break; 
+            }
+
+            // Securely parse the string to respect quotes (e.g., upload "my video.mp4")
+            if let Some(mut parsed_args) = shlex::split(input) {
+                let mut cmd_args = vec!["heriheri-cli".to_string()];
+                cmd_args.append(&mut parsed_args);
+                
+                // Use clap's try_parse_from to prevent exiting the loop on an error (like typos)
+                match Cli::try_parse_from(cmd_args) {
+                    Ok(cli) => execute_command(cli.command, &state, &cwd_file, &mut cwd_id).await,
+                    Err(e) => { let _ = e.print(); }
+                }
+            } else {
+                println!("[ERROR] Unmatched quotes in your command.");
+            }
         }
     }
 }
