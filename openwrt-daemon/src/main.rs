@@ -13,6 +13,14 @@ use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+static LANG: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0); // 0 = EN, 1 = ZH
+
+macro_rules! t {
+    ($en:expr, $zh:expr) => {
+        if crate::LANG.load(std::sync::atomic::Ordering::Relaxed) == 1 { $zh } else { $en }
+    };
+}
+
 // =====================================================================
 // CLI ARGUMENT ROUTER
 // =====================================================================
@@ -34,28 +42,30 @@ enum Commands {
 
     /// Logout and clear saved credentials
     Logout,
-    
+
     /// List files in the current or target directory
     Ls { #[arg(default_value = ".")] path: String },
-    
+
     /// Change the current working directory
     Cd { #[arg(default_value = "/")] path: String },
-    
+
     /// Print the current working directory
     Pwd,
     
     /// Upload local files to the cloud
     Upload { 
-        #[arg(required = true)] args: Vec<String>, 
+        #[arg(required = true, value_name = "FILE... DEST_DIR", help = "Local files followed by target VFS directory")] 
+        args: Vec<String>, 
     },
     
     /// Download files from the cloud
     Download { 
-        #[arg(required = true)] args: Vec<String>, 
+        #[arg(required = true, value_name = "VFS_PATH... LOCAL_DIR", help = "VFS files followed by local destination directory")] 
+        args: Vec<String>, 
     },
     
     /// Move files or folders to the recycle bin
-    Rm { #[arg(required = true)] paths: Vec<String> },
+    Rm { #[arg(required = true, value_name = "VFS_PATH...")] paths: Vec<String> },
     
     /// Create a new folder
     Mkdir { path: String },
@@ -64,28 +74,34 @@ enum Commands {
     Rename { path: String, new_name: String },
     
     /// Move items to another directory
-    Mv { #[arg(required = true)] args: Vec<String> },
+    Mv { 
+        #[arg(required = true, value_name = "SOURCE... DEST_DIR", help = "VFS items to move followed by target VFS directory")] 
+        args: Vec<String> 
+    },
     
     /// List all items currently in the recycle bin
     Bin,
-    
-    /// Restore items from the recycle bin (Uses VFS ID from 'bin' command)
-    Restore { #[arg(required = true)] vfs_ids: Vec<u64> },
-    
-    /// Permanently delete items from the recycle bin (Uses VFS ID from 'bin' command)
-    HardDelete { #[arg(required = true)] vfs_ids: Vec<u64> },
-    
+
+    /// Restore items from the recycle bin
+    Restore { #[arg(required = true, value_name = "VFS_ID...")] vfs_ids: Vec<u64> },
+
+    /// Permanently delete items from the recycle bin
+    HardDelete { #[arg(required = true, value_name = "VFS_ID...")] vfs_ids: Vec<u64> },
+
     /// Generate a secure sharing link (heri://...) for a file
     Share { path: String },
-    
+
     /// Save a shared file (heri://...) to your own cloud
     Rent { code: String, #[arg(short, long, default_value = ".")] target_path: String },
-    
+
     /// Search the Virtual File System by name or MD5 hash
     Search { query: String },
     
     /// Force push local VFS changes to the cloud
     Sync,
+
+    /// Switch CLI Language (en / zh)
+    Lang { #[arg(value_name = "en|zh")] code: String },
 }
 
 async fn resolve_path(state: &AppState, cwd_id: u64, path: &str) -> Result<u64, String> {
@@ -397,6 +413,21 @@ async fn execute_command(
                 Err(e) => println!("[ERROR] Sync failed: {}", e),
             }
         }
+        Some(Commands::Lang { code }) => {
+            let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
+            let mut config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or(serde_json::json!({}));
+            
+            if code.to_lowercase() == "zh" {
+                config["cli_lang"] = serde_json::Value::String("zh".to_string());
+                crate::LANG.store(1, std::sync::atomic::Ordering::Relaxed);
+                println!("[SUCCESS] 已切换到中文");
+            } else {
+                config["cli_lang"] = serde_json::Value::String("en".to_string());
+                crate::LANG.store(0, std::sync::atomic::Ordering::Relaxed);
+                println!("[SUCCESS] Switched to English");
+            }
+            let _ = std::fs::write("heriheri_config.json", serde_json::to_string_pretty(&config).unwrap_or_default());
+        }
         Some(Commands::Daemon) | None => {
             openwrt_webdav::run_server(state.clone()).await;
         }
@@ -407,6 +438,11 @@ async fn execute_command(
 async fn main() {
     let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
     let config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or(serde_json::json!({}));
+
+    if config["cli_lang"].as_str().unwrap_or("en") == "zh" {
+        LANG.store(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     let phone = config["lanzou_phone"].as_str().unwrap_or("").to_string();
     let password = config["lanzou_pass"].as_str().unwrap_or("").to_string();
 
@@ -463,13 +499,13 @@ async fn main() {
         execute_command(cli.command, &state, &cwd_file, &mut cwd_id).await;
     } else {
         println!("==========================================");
-        println!(" HeriHeriCloud Universal CLI Shell Active ");
+        println!("{}", t!(" HeriHeriCloud Universal CLI Shell Active ", " HeriHeriCloud 命令行交互模式已启动 "));
         println!("==========================================");
-        println!("Type 'help' to see all commands. Type 'exit' to quit.\n");
+        println!("{}\n", t!("Type 'help' to see all commands. Type 'exit' to quit.", "输入 'help' 查看所有命令。输入 'exit' 退出。"));
 
         let history_file = std::env::temp_dir().join("heriheri_history.txt");
         let mut rl = rustyline::DefaultEditor::new().expect("Failed to initialize terminal");
-        let _ = rl.load_history(&history_file); // Load previous sessions!
+        let _ = rl.load_history(&history_file);
 
         loop {
             let path_str = get_full_path(&state, cwd_id).await;
