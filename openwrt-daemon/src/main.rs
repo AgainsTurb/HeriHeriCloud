@@ -44,11 +44,17 @@ enum Commands {
     /// Print the current working directory
     Pwd,
     
-    /// Upload a local file to the cloud
-    Upload { file_path: String, #[arg(default_value = ".")] dest_path: String },
+    /// Upload local files to the cloud
+    Upload { 
+        #[arg(required = true)] file_paths: Vec<String>, 
+        #[arg(short, long, default_value = ".")] dest_path: String 
+    },
     
-    /// Download a file from the cloud
-    Download { path: String, dest_path: String },
+    /// Download files from the cloud
+    Download { 
+        #[arg(required = true)] paths: Vec<String>, 
+        #[arg(short, long, default_value = ".")] dest_path: String 
+    },
     
     /// Move files or folders to the recycle bin
     Rm { #[arg(required = true)] paths: Vec<String> },
@@ -199,28 +205,63 @@ async fn execute_command(
                 Err(e) => println!("[ERROR] {}", e),
             }
         }
-        Some(Commands::Upload { file_path, dest_path }) => {
+        Some(Commands::Upload { file_paths, dest_path }) => {
             match resolve_path(state, *cwd_id, &dest_path).await {
                 Ok(pid) => {
-                    let task_id = format!("cli_up_{}", crate::openwrt_heriheri::current_timestamp());
-                    match openwrt_lanzou::vfs_upload_file(file_path, task_id, pid, "".to_string(), 0, state).await {
-                        Ok(_) => println!("\n[SUCCESS] Upload complete!"),
-                        Err(e) => println!("\n[ERROR] Upload failed: {}", e),
+                    for file_path in file_paths {
+                        // Expand ~ to the user's HOME directory
+                        let expanded_path = if file_path.starts_with("~/") {
+                            file_path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
+                        } else {
+                            file_path.clone()
+                        };
+                        
+                        let task_id = format!("cli_up_{}", crate::openwrt_heriheri::current_timestamp());
+                        println!("\n[UPLOAD] Starting {}...", expanded_path);
+                        match openwrt_lanzou::vfs_upload_file(expanded_path, task_id, pid, "".to_string(), 0, state).await {
+                            Ok(_) => println!("[SUCCESS] Upload complete!"),
+                            Err(e) => println!("[ERROR] Upload failed: {}", e),
+                        }
                     }
                 }
                 Err(e) => println!("[ERROR] Invalid destination: {}", e),
             }
         }
-        Some(Commands::Download { path, dest_path }) => {
-            match resolve_path(state, *cwd_id, &path).await {
-                Ok(vfs_id) => {
-                    let task_id = format!("cli_down_{}", crate::openwrt_heriheri::current_timestamp());
-                    match openwrt_lanzou::vfs_download_file(task_id, vfs_id, None, dest_path, 0, 0, state).await {
-                        Ok(_) => println!("\n[SUCCESS] Download complete!"),
-                        Err(e) => println!("\n[ERROR] Download failed: {}", e),
+        Some(Commands::Download { paths, dest_path }) => {
+            let expanded_dest = if dest_path.starts_with("~/") {
+                dest_path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
+            } else {
+                dest_path.clone()
+            };
+
+            // If downloading multiple files, force destination to be treated as a directory
+            let is_dir_target = std::path::Path::new(&expanded_dest).is_dir() || paths.len() > 1;
+
+            for path in paths {
+                match resolve_path(state, *cwd_id, &path).await {
+                    Ok(vfs_id) => {
+                        let original_name = {
+                            let vfs_guard = state.vfs.lock().await;
+                            vfs_guard.as_ref().unwrap().nodes.get(&vfs_id).map(|n| n.name.clone()).unwrap_or("downloaded_file".to_string())
+                        };
+                        
+                        let final_dest = if is_dir_target {
+                            let target_dir = std::path::Path::new(&expanded_dest);
+                            if !target_dir.exists() { std::fs::create_dir_all(target_dir).unwrap_or_default(); }
+                            target_dir.join(original_name).to_string_lossy().to_string()
+                        } else {
+                            expanded_dest.clone()
+                        };
+
+                        let task_id = format!("cli_down_{}", crate::openwrt_heriheri::current_timestamp());
+                        println!("\n[DOWNLOAD] Saving to {}...", final_dest);
+                        match openwrt_lanzou::vfs_download_file(task_id, vfs_id, None, final_dest, 0, 0, state).await {
+                            Ok(_) => println!("[SUCCESS] Download complete!"),
+                            Err(e) => println!("[ERROR] Download failed: {}", e),
+                        }
                     }
+                    Err(e) => println!("[ERROR] File not found: {}", e),
                 }
-                Err(e) => println!("[ERROR] File not found: {}", e),
             }
         }
         Some(Commands::Rm { paths }) => {
@@ -414,46 +455,56 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     
     if args.len() > 1 {
-        // If they type `./heriheri-cli daemon` or `./heriheri-cli ls`, run just that command and exit
         let cli = Cli::parse();
         execute_command(cli.command, &state, &cwd_file, &mut cwd_id).await;
     } else {
-        // If they just type `./heriheri-cli`, enter INTERACTIVE SHELL MODE!
-        use std::io::{self, Write};
-        
         println!("==========================================");
         println!(" HeriHeriCloud Universal CLI Shell Active ");
         println!("==========================================");
         println!("Type 'help' to see all commands. Type 'exit' to quit.\n");
 
+        let history_file = std::env::temp_dir().join("heriheri_history.txt");
+        let mut rl = rustyline::DefaultEditor::new().expect("Failed to initialize terminal");
+        let _ = rl.load_history(&history_file); // Load previous sessions!
+
         loop {
-            // Print the custom prompt with the current VFS path
             let path_str = get_full_path(&state, cwd_id).await;
-            print!("heriheri:{} > ", path_str);
-            io::stdout().flush().unwrap();
-
-            let mut input = String::new();
-            if io::stdin().read_line(&mut input).is_err() { break; }
-            let input = input.trim();
+            let prompt = format!("heriheri:{} > ", path_str);
             
-            if input.is_empty() { continue; }
-            if input == "exit" || input == "quit" { 
-                println!("Goodbye!");
-                break; 
-            }
+            match rl.readline(&prompt) {
+                Ok(line) => {
+                    let input = line.trim();
+                    if input.is_empty() { continue; }
+                    if input == "exit" || input == "quit" { 
+                        println!("Goodbye!");
+                        break; 
+                    }
 
-            // Securely parse the string to respect quotes (e.g., upload "my video.mp4")
-            if let Some(mut parsed_args) = shlex::split(input) {
-                let mut cmd_args = vec!["heriheri-cli".to_string()];
-                cmd_args.append(&mut parsed_args);
-                
-                // Use clap's try_parse_from to prevent exiting the loop on an error (like typos)
-                match Cli::try_parse_from(cmd_args) {
-                    Ok(cli) => execute_command(cli.command, &state, &cwd_file, &mut cwd_id).await,
-                    Err(e) => { let _ = e.print(); }
+                    // Save to up-arrow history
+                    let _ = rl.add_history_entry(input);
+                    let _ = rl.save_history(&history_file);
+
+                    if let Some(mut parsed_args) = shlex::split(input) {
+                        let mut cmd_args = vec!["heriheri-cli".to_string()];
+                        cmd_args.append(&mut parsed_args);
+                        
+                        match Cli::try_parse_from(cmd_args) {
+                            Ok(cli) => execute_command(cli.command, &state, &cwd_file, &mut cwd_id).await,
+                            Err(e) => { let _ = e.print(); }
+                        }
+                    } else {
+                        println!("[ERROR] Unmatched quotes in your command.");
+                    }
                 }
-            } else {
-                println!("[ERROR] Unmatched quotes in your command.");
+                Err(rustyline::error::ReadlineError::Interrupted) | 
+                Err(rustyline::error::ReadlineError::Eof) => {
+                    println!("Goodbye!");
+                    break;
+                }
+                Err(err) => {
+                    println!("Error: {:?}", err);
+                    break;
+                }
             }
         }
     }

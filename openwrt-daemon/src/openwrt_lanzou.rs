@@ -1783,7 +1783,7 @@ pub async fn vfs_upload_file(
     pb.set_style(indicatif::ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
         .unwrap()
-        .progress_chars("#>-"));
+        .progress_chars("=> "));
     pb.set_position(current_loaded as u64);
     // -----------------------------------
 
@@ -2329,7 +2329,7 @@ pub async fn vfs_download_file(
     pb.set_style(indicatif::ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
         .unwrap()
-        .progress_chars("#>-"));
+        .progress_chars("=> "));
     pb.set_position(current_loaded as u64);
     // -----------------------------------
 
