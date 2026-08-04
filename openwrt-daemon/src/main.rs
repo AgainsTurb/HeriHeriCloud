@@ -149,9 +149,12 @@ async fn execute_command(
     cwd_file: &std::path::PathBuf, 
     cwd_id: &mut u64
 ) {
+    // 1. Auto-Sync Flag Tracker
+    let mut needs_sync = false;
+
     match command {
         Some(Commands::Login { phone, password }) => {
-            println!("[AUTH] Attempting to log in as {}...", phone);
+            println!("[认证] 正在尝试登录 {}...", phone);
             match openwrt_lanzou::login(phone.clone(), password.clone(), state).await {
                 Ok(_) => {
                     let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
@@ -161,13 +164,13 @@ async fn execute_command(
                     let _ = std::fs::write("heriheri_config.json", serde_json::to_string_pretty(&config).unwrap_or_default());
 
                     if let Err(e) = openwrt_lanzou::init_vfs_root(phone, state).await {
-                        println!("[ERROR] VFS Init failed: {}", e);
+                        println!("[错误] 虚拟文件系统(VFS)初始化失败: {}", e);
                     } else {
                         let _ = openwrt_lanzou::vfs_sync_pull(state).await;
-                        println!("\n[SUCCESS] Login and Sync complete!");
+                        println!("\n[成功] 登录并同步完成！");
                     }
                 }
-                Err(e) => println!("[ERROR] Login failed: {}", e),
+                Err(e) => println!("[错误] 登录失败: {}", e),
             }
         }
         Some(Commands::Logout) => {
@@ -178,7 +181,7 @@ async fn execute_command(
             let _ = std::fs::write("heriheri_config.json", serde_json::to_string_pretty(&config).unwrap_or_default());
             let _ = std::fs::remove_file(cwd_file);
             *cwd_id = 0;
-            println!("[SUCCESS] Logged out successfully.");
+            println!("[成功] 已成功注销并清除本地凭据。");
         }
         Some(Commands::Pwd) => {
             println!("{}", get_full_path(state, *cwd_id).await);
@@ -187,9 +190,9 @@ async fn execute_command(
             match resolve_path(state, *cwd_id, &path).await {
                 Ok(pid) => {
                     let _ = std::fs::write(cwd_file, pid.to_string());
-                    *cwd_id = pid; // Update memory state instantly
+                    *cwd_id = pid; 
                 }
-                Err(e) => println!("[ERROR] {}", e),
+                Err(e) => println!("[错误] {}", e),
             }
         }
         Some(Commands::Ls { path }) => {
@@ -197,7 +200,7 @@ async fn execute_command(
                 Ok(pid) => {
                     let _ = openwrt_lanzou::vfs_enter_folder(pid, state).await;
                     if let Ok(nodes) = openwrt_lanzou::vfs_list_dir(state).await {
-                        println!("\n{:<12} | {:<5} | {:<12} | {}", "VFS ID", "TYPE", "SIZE", "NAME");
+                        println!("\n{:<12} | {:<5} | {:<12} | {}", "VFS ID", "类型", "大小", "名称");
                         println!("{:-<12}-+-{:-<5}-+-{:-<12}-+-{:-<40}", "", "", "", "");
                         for n in nodes {
                             println!("{:<12} | {:<5} | {:<12} | {}", n.id, n.node_type.as_str(), n.size, n.name);
@@ -205,7 +208,7 @@ async fn execute_command(
                         println!();
                     }
                 }
-                Err(e) => println!("[ERROR] {}", e),
+                Err(e) => println!("[错误] {}", e),
             }
         }
         Some(Commands::Upload { mut args }) => {
@@ -214,7 +217,6 @@ async fn execute_command(
             match resolve_path(state, *cwd_id, &dest_path).await {
                 Ok(pid) => {
                     for file_path in args {
-                        // Safely expand Unix HOME directory paths
                         let expanded_path = if file_path.starts_with("~/") || file_path == "~" {
                             file_path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
                         } else {
@@ -222,18 +224,17 @@ async fn execute_command(
                         };
                         
                         let task_id = format!("cli_up_{}", crate::openwrt_heriheri::current_timestamp());
-                        println!("\n[UPLOAD] Starting {}...", expanded_path);
+                        println!("\n[上传] 正在处理 {}...", expanded_path);
                         match openwrt_lanzou::vfs_upload_file(expanded_path, task_id, pid, "".to_string(), 0, state).await {
-                            Ok(_) => println!("[SUCCESS] Upload complete!"),
-                            Err(e) => println!("[ERROR] Upload failed: {}", e),
+                            Ok(_) => { println!("[成功] 上传完成！"); needs_sync = true; },
+                            Err(e) => println!("[错误] 上传失败: {}", e),
                         }
                     }
                 }
-                Err(e) => println!("[ERROR] Invalid destination: {}", e),
+                Err(e) => println!("[错误] 无效的目标路径: {}", e),
             }
         }
         Some(Commands::Download { mut args }) => {
-            // UNIX Behavior: Last argument is destination, everything else is VFS files to download
             let dest_path = if args.len() > 1 { args.pop().unwrap() } else { ".".to_string() };
             
             let expanded_dest = if dest_path.starts_with("~/") || dest_path == "~" {
@@ -242,7 +243,6 @@ async fn execute_command(
                 dest_path
             };
 
-            // If downloading multiple files, OR destination already exists as a folder, append file name
             let is_dir_target = std::path::Path::new(&expanded_dest).is_dir() || args.len() > 1;
 
             for path in args {
@@ -262,13 +262,13 @@ async fn execute_command(
                         };
 
                         let task_id = format!("cli_down_{}", crate::openwrt_heriheri::current_timestamp());
-                        println!("\n[DOWNLOAD] Saving to {}...", final_dest);
+                        println!("\n[下载] 正在保存到 {}...", final_dest);
                         match openwrt_lanzou::vfs_download_file(task_id, vfs_id, None, final_dest, 0, 0, state).await {
-                            Ok(_) => println!("[SUCCESS] Download complete!"),
-                            Err(e) => println!("[ERROR] Download failed: {}", e),
+                            Ok(_) => println!("[成功] 下载完成！"),
+                            Err(e) => println!("[错误] 下载失败: {}", e),
                         }
                     }
-                    Err(e) => println!("[ERROR] File not found: {}", e),
+                    Err(e) => println!("[错误] 找不到该文件: {}", e),
                 }
             }
         }
@@ -277,13 +277,13 @@ async fn execute_command(
             for p in paths {
                 match resolve_path(state, *cwd_id, &p).await {
                     Ok(id) => ids.push(id),
-                    Err(e) => println!("[ERROR] Skipping '{}': {}", p, e),
+                    Err(e) => println!("[错误] 跳过 '{}': {}", p, e),
                 }
             }
             if !ids.is_empty() {
                 match openwrt_lanzou::vfs_batch_delete(ids, state).await {
-                    Ok(_) => println!("[SUCCESS] Items moved to Trash Bin."),
-                    Err(e) => println!("[ERROR] Delete failed: {}", e),
+                    Ok(_) => { println!("[成功] 项目已移至回收站。"); needs_sync = true; },
+                    Err(e) => println!("[错误] 删除失败: {}", e),
                 }
             }
         }
@@ -297,22 +297,22 @@ async fn execute_command(
                 Ok(pid) => {
                     let _ = openwrt_lanzou::vfs_enter_folder(pid, state).await;
                     match openwrt_lanzou::vfs_create_folder(name.clone(), "".to_string(), state).await {
-                        Ok(_) => println!("[SUCCESS] Folder '{}' created successfully!", name),
-                        Err(e) => println!("[ERROR] Failed to create folder: {}", e),
+                        Ok(_) => { println!("[成功] 文件夹 '{}' 创建成功！", name); needs_sync = true; },
+                        Err(e) => println!("[错误] 创建文件夹失败: {}", e),
                     }
                 }
-                Err(e) => println!("[ERROR] Invalid parent path: {}", e),
+                Err(e) => println!("[错误] 无效的父目录路径: {}", e),
             }
         }
         Some(Commands::Rename { path, new_name }) => {
             match resolve_path(state, *cwd_id, &path).await {
                 Ok(vfs_id) => {
                     match openwrt_lanzou::vfs_rename_item(vfs_id, new_name.clone(), state).await {
-                        Ok(_) => println!("[SUCCESS] Item renamed to '{}'", new_name),
-                        Err(e) => println!("[ERROR] Rename failed: {}", e),
+                        Ok(_) => { println!("[成功] 已重命名为 '{}'", new_name); needs_sync = true; },
+                        Err(e) => println!("[错误] 重命名失败: {}", e),
                     }
                 }
-                Err(e) => println!("[ERROR] Path not found: {}", e),
+                Err(e) => println!("[错误] 找不到该路径: {}", e),
             }
         }
         Some(Commands::Mv { mut args }) => {
@@ -323,68 +323,68 @@ async fn execute_command(
                     for p in args {
                         match resolve_path(state, *cwd_id, &p).await {
                             Ok(id) => ids.push(id),
-                            Err(e) => println!("[ERROR] Skipping '{}': {}", p, e),
+                            Err(e) => println!("[错误] 跳过 '{}': {}", p, e),
                         }
                     }
                     if !ids.is_empty() {
                         match openwrt_lanzou::vfs_move_items(ids, target_pid, state).await {
-                            Ok(_) => println!("[SUCCESS] Items moved to {}", target),
-                            Err(e) => println!("[ERROR] Move failed: {}", e),
+                            Ok(_) => { println!("[成功] 项目已移动至 '{}'", target); needs_sync = true; },
+                            Err(e) => println!("[错误] 移动失败: {}", e),
                         }
                     }
                 }
-                Err(e) => println!("[ERROR] Target path invalid: {}", e),
+                Err(e) => println!("[错误] 目标路径无效: {}", e),
             }
         }
         Some(Commands::Bin) => {
             match openwrt_lanzou::vfs_list_bin(state).await {
                 Ok(nodes) => {
-                    println!("\n{:<12} | {:<5} | {:<12} | {}", "VFS ID", "TYPE", "SIZE", "NAME");
+                    println!("\n{:<12} | {:<5} | {:<12} | {}", "VFS ID", "类型", "大小", "名称");
                     println!("{:-<12}-+-{:-<5}-+-{:-<12}-+-{:-<40}", "", "", "", "");
                     for n in nodes { println!("{:<12} | {:<5} | {:<12} | {}", n.id, n.node_type.as_str(), n.size, n.name); }
                     println!();
                 }
-                Err(e) => println!("[ERROR] Failed to list recycle bin: {}", e),
+                Err(e) => println!("[错误] 获取回收站列表失败: {}", e),
             }
         }
         Some(Commands::Restore { vfs_ids }) => {
             match openwrt_lanzou::vfs_restore_items(vfs_ids, state).await {
-                Ok(_) => println!("[SUCCESS] Items restored successfully!"),
-                Err(e) => println!("[ERROR] Restore failed: {}", e),
+                Ok(_) => { println!("[成功] 项目已成功恢复！"); needs_sync = true; },
+                Err(e) => println!("[错误] 恢复失败: {}", e),
             }
         }
         Some(Commands::HardDelete { vfs_ids }) => {
             match openwrt_lanzou::vfs_hard_delete_items(vfs_ids, state).await {
-                Ok(_) => println!("[SUCCESS] Items permanently deleted!"),
-                Err(e) => println!("[ERROR] Hard delete failed: {}", e),
+                Ok(_) => { println!("[成功] 项目已彻底删除！"); needs_sync = true; },
+                Err(e) => println!("[错误] 彻底删除失败: {}", e),
             }
         }
         Some(Commands::Share { path }) => {
             match resolve_path(state, *cwd_id, &path).await {
                 Ok(id) => {
                     match openwrt_lanzou::vfs_generate_share_code(id, state).await {
-                        Ok(code) => println!("\n[SHARE CODE]\n{}", code),
-                        Err(e) => println!("[ERROR] Failed to generate share code: {}", e),
+                        Ok(code) => println!("\n[分享链接]\n{}", code),
+                        Err(e) => println!("[错误] 生成分享链接失败: {}", e),
                     }
                 }
-                Err(e) => println!("[ERROR] Path not found: {}", e),
+                Err(e) => println!("[错误] 找不到该路径: {}", e),
             }
         }
         Some(Commands::Rent { code, target_path }) => {
             match resolve_path(state, *cwd_id, &target_path).await {
                 Ok(pid) => {
                     match openwrt_lanzou::vfs_rent_item(code, pid, state).await {
-                        Ok(_) => println!("[SUCCESS] Shared item saved to your cloud!"),
-                        Err(e) => println!("[ERROR] Failed to save shared item: {}", e),
+                        Ok(_) => { println!("[成功] 分享项目已保存至云盘！"); needs_sync = true; },
+                        Err(e) => println!("[错误] 保存分享项目失败: {}", e),
                     }
                 }
-                Err(e) => println!("[ERROR] Target path invalid: {}", e),
+                Err(e) => println!("[错误] 目标路径无效: {}", e),
             }
         }
         Some(Commands::Search { query }) => {
             match openwrt_lanzou::vfs_search(query, state).await {
                 Ok(results) => {
-                    println!("\n{:<12} | {}", "VFS ID", "PATH");
+                    println!("\n{:<12} | {}", "VFS ID", "路径");
                     println!("{:-<12}-+-{:-<50}", "", "");
                     for r in results {
                         let id = r["id"].as_u64().unwrap_or(0);
@@ -393,17 +393,26 @@ async fn execute_command(
                     }
                     println!();
                 }
-                Err(e) => println!("[ERROR] Search failed: {}", e),
+                Err(e) => println!("[错误] 搜索失败: {}", e),
             }
         }
         Some(Commands::Sync) => {
             match openwrt_lanzou::vfs_sync_push(state).await {
-                Ok(_) => println!("[SUCCESS] Local tree forcefully pushed to cloud!"),
-                Err(e) => println!("[ERROR] Sync failed: {}", e),
+                Ok(_) => println!("[成功] 本地目录树已强制推送到云端！"),
+                Err(e) => println!("[错误] 同步失败: {}", e),
             }
         }
         Some(Commands::Daemon) | None => {
             openwrt_webdav::run_server(state.clone()).await;
+        }
+    }
+
+    // 2. Perform Auto-Sync if any VFS modifications happened
+    if needs_sync {
+        println!("\n[自动同步] 检测到文件变更，正在将最新状态推送到云端...");
+        match openwrt_lanzou::vfs_sync_push(state).await {
+            Ok(_) => println!("[自动同步] 成功！"),
+            Err(e) => println!("[自动同步] 失败: {}", e),
         }
     }
 }
