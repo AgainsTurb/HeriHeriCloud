@@ -405,21 +405,6 @@ async fn execute_command(
                 Err(e) => println!("[ERROR] Sync failed: {}", e),
             }
         }
-        Some(Commands::Lang { code }) => {
-            let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
-            let mut config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or(serde_json::json!({}));
-            
-            if code.to_lowercase() == "zh" {
-                config["cli_lang"] = serde_json::Value::String("zh".to_string());
-                crate::LANG.store(1, std::sync::atomic::Ordering::Relaxed);
-                println!("[SUCCESS] 已切换到中文");
-            } else {
-                config["cli_lang"] = serde_json::Value::String("en".to_string());
-                crate::LANG.store(0, std::sync::atomic::Ordering::Relaxed);
-                println!("[SUCCESS] Switched to English");
-            }
-            let _ = std::fs::write("heriheri_config.json", serde_json::to_string_pretty(&config).unwrap_or_default());
-        }
         Some(Commands::Daemon) | None => {
             openwrt_webdav::run_server(state.clone()).await;
         }
@@ -430,10 +415,6 @@ async fn execute_command(
 async fn main() {
     let config_json = std::fs::read_to_string("heriheri_config.json").unwrap_or_default();
     let config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or(serde_json::json!({}));
-
-    if config["cli_lang"].as_str().unwrap_or("en") == "zh" {
-        LANG.store(1, std::sync::atomic::Ordering::Relaxed);
-    }
 
     let phone = config["lanzou_phone"].as_str().unwrap_or("").to_string();
     let password = config["lanzou_pass"].as_str().unwrap_or("").to_string();
