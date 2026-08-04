@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 // =====================================================================
 #[derive(Parser)]
 #[command(name = "HeriHeri Core")]
-#[command(about = "Universal CLI and WebDAV Daemon for HeriHeriCloud", long_about = None)]
+#[command(about = "HeriHeriCloud 命令行终端", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -26,70 +26,70 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the WebDAV, MCP, and WebUI Daemon (Default)
+    /// 启动 WebDAV, MCP 和 WebUI 后台守护进程 (默认)
     Daemon,
 
-    /// Login to your Lanzou Cloud account
+    /// 登录 Lanzou 蓝奏云账号
     Login { phone: String, password: String },
 
-    /// Logout and clear saved credentials
+    /// 注销并清除保存的账号密码
     Logout,
 
-    /// List files in the current or target directory
+    /// 列出当前或指定目录下的文件和文件夹
     Ls { #[arg(default_value = ".")] path: String },
 
-    /// Change the current working directory
+    /// 切换当前工作目录
     Cd { #[arg(default_value = "/")] path: String },
 
-    /// Print the current working directory
+    /// 显示当前工作目录的完整路径
     Pwd,
     
-    /// Upload local files to the cloud
+    /// 将本地文件上传到云端
     Upload { 
         #[arg(required = true, value_name = "本地文件... 目标目录", help = "本地文件路径，最后一个参数为云端目标目录")] 
         args: Vec<String>, 
     },
     
-    /// Download files from the cloud
+    /// 从云端下载文件到本地
     Download { 
         #[arg(required = true, value_name = "云端文件... 本地目录", help = "云端文件路径，最后一个参数为本地保存目录")] 
         args: Vec<String>, 
     },
     
-    /// Move files or folders to the recycle bin
+    /// 将文件或文件夹移动到回收站
     Rm { #[arg(required = true, value_name = "云端路径...")] paths: Vec<String> },
     
-    /// Create a new folder
+    /// 创建新文件夹
     Mkdir { path: String },
     
-    /// Rename a file or folder
+    /// 重命名文件或文件夹
     Rename { path: String, new_name: String },
     
-    /// Move items to another directory
+    /// 移动文件或文件夹到其他目录
     Mv { 
         #[arg(required = true, value_name = "源文件... 目标目录", help = "要移动的云端文件，最后一个参数为目标目录")] 
         args: Vec<String> 
     },
     
-    /// List all items currently in the recycle bin
+    /// 列出回收站中的所有文件
     Bin,
 
-    /// Restore items from the recycle bin
+    /// 从回收站恢复文件
     Restore { #[arg(required = true, value_name = "文件ID...")] vfs_ids: Vec<u64> },
 
-    /// Permanently delete items from the recycle bin
+    /// 彻底删除回收站中的文件
     HardDelete { #[arg(required = true, value_name = "文件ID...")] vfs_ids: Vec<u64> },
 
-    /// Generate a secure sharing link (heri://...) for a file
+    /// 生成文件的安全分享链接 (heri://...)
     Share { path: String },
 
-    /// Save a shared file (heri://...) to your own cloud
+    /// 将他人分享的文件 (heri://...) 保存到自己的云盘
     Rent { code: String, #[arg(short, long, default_value = ".")] target_path: String },
 
-    /// Search the Virtual File System by name or MD5 hash
+    /// 通过名称或 MD5 搜索虚拟文件系统
     Search { query: String },
     
-    /// Force push local VFS changes to the cloud
+    /// 强制将本地 VFS 目录树推送到云端同步
     Sync,
 }
 
