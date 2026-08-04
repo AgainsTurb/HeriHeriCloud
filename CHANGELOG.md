@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.4.0] – 2026-08-04
 
 ### 新增
-- 新增CLI命令行终端工具。
+- 新增多平台CLI命令行终端工具。
 
 ### 变更
 - 无。
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 无。
 
 ### Added
-- Added a new CLI command-line tool.
+- Added a new multi-platform CLI command-line tool.
 
 ### Changed
 - None.
