@@ -740,13 +740,23 @@ async fn api_set_config(Json(payload): Json<WebdavConfig>) -> impl IntoResponse 
         // Spawn a detached task to restart the daemon after returning the HTTP 200 OK
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            use std::os::unix::process::CommandExt;
             
             println!("\n[PROXY] Port changed! Self-restarting daemon...");
             let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("./heriheri-openwrt"));
             
-            // exec() completely replaces the current process, safely unbinding the old port instantly
-            let _ = std::process::Command::new(exe).exec();
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                // exec() completely replaces the current process, safely unbinding the old port instantly
+                let _ = std::process::Command::new(exe).exec();
+            }
+
+            #[cfg(windows)]
+            {
+                // Windows does not support exec(), so we spawn a detached child process instead
+                let _ = std::process::Command::new(exe).spawn();
+            }
+            
             std::process::exit(1); 
         });
         return (StatusCode::OK, "Restarting");
