@@ -91,9 +91,6 @@ enum Commands {
     
     /// Force push local VFS changes to the cloud
     Sync,
-
-    /// Switch CLI Language (en / zh)
-    Lang { #[arg(value_name = "en|zh")] code: String },
 }
 
 async fn resolve_path(state: &AppState, cwd_id: u64, path: &str) -> Result<u64, String> {
