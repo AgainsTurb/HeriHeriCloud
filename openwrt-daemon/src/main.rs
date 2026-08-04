@@ -13,14 +13,6 @@ use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-static LANG: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0); // 0 = EN, 1 = ZH
-
-macro_rules! t {
-    ($en:expr, $zh:expr) => {
-        if crate::LANG.load(std::sync::atomic::Ordering::Relaxed) == 1 { $zh } else { $en }
-    };
-}
-
 // =====================================================================
 // CLI ARGUMENT ROUTER
 // =====================================================================
@@ -54,18 +46,18 @@ enum Commands {
     
     /// Upload local files to the cloud
     Upload { 
-        #[arg(required = true, value_name = "FILE... DEST_DIR", help = "Local files followed by target VFS directory")] 
+        #[arg(required = true, value_name = "本地文件... 目标目录", help = "本地文件路径，最后一个参数为云端目标目录")] 
         args: Vec<String>, 
     },
     
     /// Download files from the cloud
     Download { 
-        #[arg(required = true, value_name = "VFS_PATH... LOCAL_DIR", help = "VFS files followed by local destination directory")] 
+        #[arg(required = true, value_name = "云端文件... 本地目录", help = "云端文件路径，最后一个参数为本地保存目录")] 
         args: Vec<String>, 
     },
     
     /// Move files or folders to the recycle bin
-    Rm { #[arg(required = true, value_name = "VFS_PATH...")] paths: Vec<String> },
+    Rm { #[arg(required = true, value_name = "云端路径...")] paths: Vec<String> },
     
     /// Create a new folder
     Mkdir { path: String },
@@ -75,7 +67,7 @@ enum Commands {
     
     /// Move items to another directory
     Mv { 
-        #[arg(required = true, value_name = "SOURCE... DEST_DIR", help = "VFS items to move followed by target VFS directory")] 
+        #[arg(required = true, value_name = "源文件... 目标目录", help = "要移动的云端文件，最后一个参数为目标目录")] 
         args: Vec<String> 
     },
     
@@ -83,10 +75,10 @@ enum Commands {
     Bin,
 
     /// Restore items from the recycle bin
-    Restore { #[arg(required = true, value_name = "VFS_ID...")] vfs_ids: Vec<u64> },
+    Restore { #[arg(required = true, value_name = "文件ID...")] vfs_ids: Vec<u64> },
 
     /// Permanently delete items from the recycle bin
-    HardDelete { #[arg(required = true, value_name = "VFS_ID...")] vfs_ids: Vec<u64> },
+    HardDelete { #[arg(required = true, value_name = "文件ID...")] vfs_ids: Vec<u64> },
 
     /// Generate a secure sharing link (heri://...) for a file
     Share { path: String },
@@ -499,9 +491,9 @@ async fn main() {
         execute_command(cli.command, &state, &cwd_file, &mut cwd_id).await;
     } else {
         println!("==========================================");
-        println!("{}", t!(" HeriHeriCloud Universal CLI Shell Active ", " HeriHeriCloud 命令行交互模式已启动 "));
+        println!(" HeriHeriCloud 命令行交互模式已启动 ");
         println!("==========================================");
-        println!("{}\n", t!("Type 'help' to see all commands. Type 'exit' to quit.", "输入 'help' 查看所有命令。输入 'exit' 退出。"));
+        println!("输入 'help' 查看所有命令。输入 'exit' 退出。\n");
 
         let history_file = std::env::temp_dir().join("heriheri_history.txt");
         let mut rl = rustyline::DefaultEditor::new().expect("Failed to initialize terminal");
