@@ -1,5 +1,4 @@
 import java.util.Properties
-import java.io.FileInputStream
 
 plugins {
     id("com.android.application")
@@ -14,6 +13,25 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val releaseKeystoreFile = rootProject.file("keystore.properties")
+val releaseKeystoreProperties = Properties().apply {
+    if (releaseKeystoreFile.exists()) {
+        releaseKeystoreFile.inputStream().use { load(it) }
+    }
+}
+val releaseKeyAlias = releaseKeystoreProperties.getProperty("keyAlias")
+val releaseKeyPassword = releaseKeystoreProperties.getProperty("keyPassword")
+    ?: releaseKeystoreProperties.getProperty("password")
+val releaseStoreFile = releaseKeystoreProperties.getProperty("storeFile")
+val releaseStorePassword = releaseKeystoreProperties.getProperty("storePassword")
+    ?: releaseKeystoreProperties.getProperty("password")
+val hasReleaseSigning = listOf(
+    releaseKeyAlias,
+    releaseKeyPassword,
+    releaseStoreFile,
+    releaseStorePassword,
+).all { !it.isNullOrBlank() }
+
 android {
     compileSdk = 36
     namespace = "com.alfred_whitman.heriheri"
@@ -27,16 +45,13 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            val keystorePropertiesFile = rootProject.file("keystore.properties")
-            val keystoreProperties = Properties()
-            if (keystorePropertiesFile.exists()) {
-                keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+        if (hasReleaseSigning) {
+            create("release") {
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
             }
-            keyAlias = keystoreProperties["keyAlias"] as String
-            keyPassword = keystoreProperties["password"] as String
-            storeFile = file(keystoreProperties["storeFile"] as String)
-            storePassword = keystoreProperties["password"] as String
         }
     }
 
@@ -53,7 +68,9 @@ android {
             }
         }
         getByName("release") {
-            signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

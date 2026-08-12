@@ -13,6 +13,7 @@ import Home from "./Components/Home";
 import Transfer from "./Components/Transfer";
 import Settings from "./Components/Settings";
 import Rent from "./Components/Rent";
+import ConceptDesktop, { conceptDesktopAvailable } from "@concept-desktop";
 
 export default function App() {
   const { t } = useTranslation();
@@ -480,6 +481,7 @@ export default function App() {
 
   const renderContent = () => {
     if (activeTab === "home") return <Home status={status} />;
+    if (conceptDesktopAvailable && activeTab === "concept") return <ConceptDesktop status={status} />;
     if (activeTab === "transfer") return <Transfer />;
     if (activeTab === "settings") return <Settings isMobile={isMobile} AppLogo={AppLogo} AppAuth={AppAuth} />;
     if (activeTab === "rent") return <Rent />;
@@ -537,6 +539,12 @@ export default function App() {
         <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M2 3h6l2 3h12v15H2z"/></svg>
         {!isMobile && t("All Files")}
       </div>
+      {conceptDesktopAvailable && !isMobile && (
+        <div style={activeTab === "concept" ? styles.navItemActive : styles.navItem} onClick={() => setActiveTab("concept")}>
+          <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M3 5l9-3 9 3-9 3z"/><path d="M3 10l9 3 9-3"/><path d="M3 15l9 3 9-3"/><path d="M3 5v10M21 5v10"/></svg>
+          {t("Concept Desktop")}
+        </div>
+      )}
       {!isMobile && <hr style={styles.divider} />}
       <div style={activeTab === "transfer" ? (isMobile ? styles.mobileNavItemActive : styles.navItemActive) : (isMobile ? styles.mobileNavItem : styles.navItem)} onClick={() => setActiveTab("transfer")}>
         <svg style={styles.navIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter"><path d="M21 15v4H3v-4M7 10l5 5 5-5M12 15V3"/></svg>

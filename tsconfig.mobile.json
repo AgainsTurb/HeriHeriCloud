@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@concept-desktop": ["./src/Components/ConceptDesktopEntry.mobile.tsx"]
+    }
+  },
+  "exclude": [
+    "src/Components/ConceptDesktop.tsx",
+    "src/Components/ConceptDesktopEntry.desktop.ts"
+  ]
+}

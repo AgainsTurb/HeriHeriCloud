@@ -62,3 +62,5 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 *.log
+
+PROJECT_SCRIPT_REFERENCE.md

@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.5.0] – 2026-08-12
+
+### 新增
+- 新增概念桌面。
+
+### 变更
+- 无。
+
+### 修复
+- 无。
+
+### Added
+- Added a Concept Desktop.
+
+### Changed
+- None.
+
+### Fixed
+- None.
+
+---
+
+---
+
 ## [1.4.0] – 2026-08-04
 
 ### 新增

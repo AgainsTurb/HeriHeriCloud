@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node scripts/build-platform.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "scan-i18n": "i18next \"src/**/*.{ts,tsx}\" --config i18next-parser.config.cjs",
