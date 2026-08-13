@@ -14,7 +14,7 @@ use futures_util::stream::BoxStream;
 use futures_util::StreamExt;
 use reqwest::Client;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -22,9 +22,19 @@ use tokio::sync::Mutex;
 use crate::lanzou::{AppState, SharePayload};
 
 const CHUNK_SIZE: usize = 100 * 1024 * 1024;
-const PREFETCH_CLAMP: usize = 2 * 1024 * 1024;
+const DIRECT_LINK_TTL: Duration = Duration::from_secs(240);
+const DIRECT_LINK_LOOKAHEAD: usize = 3;
+const CLOUD_RESOLVE_TIMEOUT: Duration = Duration::from_secs(45);
+const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const UPSTREAM_PACKET_TIMEOUT: Duration = Duration::from_secs(20);
 
-static SERVER_STARTED: AtomicBool = AtomicBool::new(false);
+static SERVER_PORT: std::sync::OnceLock<Arc<Mutex<Option<u16>>>> = std::sync::OnceLock::new();
+
+fn get_server_port() -> Arc<Mutex<Option<u16>>> {
+    SERVER_PORT
+        .get_or_init(|| Arc::new(Mutex::new(None)))
+        .clone()
+}
 
 // ========================================================
 // MEMORY CACHE ENGINE
@@ -34,16 +44,81 @@ struct CachedMedia {
     chunks_str: String,
     total_size: usize,
     urls: Vec<String>,
+    chunk_password: Option<String>,
+    direct_urls: Vec<Option<CachedDirectUrl>>,
+    expires_at: Instant,
+}
+
+#[derive(Clone)]
+struct CachedDirectUrl {
+    url: String,
     expires_at: Instant,
 }
 
 static URL_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<u64, CachedMedia>>>> =
     std::sync::OnceLock::new();
+type MediaResolveLocks = Arc<Mutex<HashMap<u64, Arc<Mutex<()>>>>>;
+static MEDIA_RESOLVE_LOCKS: std::sync::OnceLock<MediaResolveLocks> = std::sync::OnceLock::new();
+type DirectResolveLocks = Arc<Mutex<HashMap<(u64, usize), Arc<Mutex<()>>>>>;
+static DIRECT_RESOLVE_LOCKS: std::sync::OnceLock<DirectResolveLocks> = std::sync::OnceLock::new();
+static STREAM_CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+static LEGACY_CHUNK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+static COVERT_CHUNK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
 
 fn get_cache() -> Arc<Mutex<HashMap<u64, CachedMedia>>> {
     URL_CACHE
         .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
         .clone()
+}
+
+fn chunk_index_from_name(name: &str) -> Option<u32> {
+    if let Some(index) = decrypt_chunk_filename(name) {
+        return Some(index);
+    }
+    let covert = COVERT_CHUNK_RE
+        .get_or_init(|| regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap());
+    if let Some(captures) = covert.captures(name) {
+        return u32::from_str_radix(&captures[1], 16).ok();
+    }
+    let legacy = LEGACY_CHUNK_RE.get_or_init(|| regex::Regex::new(r"_part(\d+)\.iso$").unwrap());
+    legacy
+        .captures(name)
+        .and_then(|captures| captures[1].parse::<u32>().ok())
+}
+
+async fn media_resolve_lock(vfs_id: u64) -> Arc<Mutex<()>> {
+    let locks = MEDIA_RESOLVE_LOCKS
+        .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone();
+    let mut locks = locks.lock().await;
+    locks
+        .entry(vfs_id)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+async fn direct_resolve_lock(vfs_id: u64, chunk_index: usize) -> Arc<Mutex<()>> {
+    let locks = DIRECT_RESOLVE_LOCKS
+        .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone();
+    let mut locks = locks.lock().await;
+    locks
+        .entry((vfs_id, chunk_index))
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+async fn cached_media(vfs_id: u64) -> Option<CachedMedia> {
+    let cache = get_cache();
+    let mut cache = cache.lock().await;
+    match cache.get(&vfs_id) {
+        Some(entry) if Instant::now() < entry.expires_at => Some(entry.clone()),
+        Some(_) => {
+            cache.remove(&vfs_id);
+            None
+        }
+        None => None,
+    }
 }
 
 // ========================================================
@@ -88,11 +163,13 @@ fn get_filename_cipher() -> ChaCha20Poly1305 {
 /// Encrypts the payload into an un-analyzable 36-character string matching Lanzou constraints
 pub fn encrypt_chunk_filename(md5_str: &str, chunk_index: u32) -> String {
     let cipher = get_filename_cipher();
-    
+
     let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
 
     let plaintext = format!("{}{:04x}", md5_str, chunk_index);
-    let ciphertext = cipher.encrypt(&nonce, plaintext.as_bytes()).expect("Crypto Fail");
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_bytes())
+        .expect("Crypto Fail");
 
     let mut payload = nonce.to_vec();
     payload.extend_from_slice(&ciphertext);
@@ -153,6 +230,43 @@ fn parse_size_to_bytes(s: &str) -> u64 {
     (val * multiplier) as u64
 }
 
+fn parse_byte_range(
+    range_header: Option<&str>,
+    total_size: usize,
+) -> Result<(usize, usize, bool), ()> {
+    if total_size == 0 {
+        return Err(());
+    }
+    let Some(range_header) = range_header else {
+        return Ok((0, total_size - 1, false));
+    };
+    let range = range_header.strip_prefix("bytes=").ok_or(())?;
+    if range.contains(',') {
+        return Err(()); // Multipart byte ranges are intentionally unsupported.
+    }
+    let (start, end) = range.split_once('-').ok_or(())?;
+    let (start, end) = if start.is_empty() {
+        let suffix = end.parse::<usize>().map_err(|_| ())?;
+        if suffix == 0 {
+            return Err(());
+        }
+        let suffix = suffix.min(total_size);
+        (total_size - suffix, total_size - 1)
+    } else {
+        let start = start.parse::<usize>().map_err(|_| ())?;
+        let end = if end.is_empty() {
+            total_size - 1
+        } else {
+            end.parse::<usize>().map_err(|_| ())?.min(total_size - 1)
+        };
+        (start, end)
+    };
+    if start >= total_size || end < start {
+        return Err(());
+    }
+    Ok((start, end, true))
+}
+
 // Minimal UTF-8 URL Decoder to prevent Cargo.toml dependency changes
 fn decode_url(input: &str) -> String {
     let mut bytes = Vec::new();
@@ -208,11 +322,14 @@ async fn fallback_logger(method: axum::http::Method, uri: axum::http::Uri) -> im
     (StatusCode::NOT_FOUND, "Not Found")
 }
 
-pub async fn run_server(state: AppState, app: tauri::AppHandle) {
+pub async fn run_server(listener: tokio::net::TcpListener, state: AppState, app: tauri::AppHandle) {
     let shared_state = Arc::new(state);
 
     let app_router = Router::new()
-        .route("/stream/:vfs_id", get(handle_stream))
+        .route(
+            "/stream/:vfs_id",
+            get(handle_stream).head(handle_stream_head),
+        )
         .route("/dav", axum::routing::any(handle_dav_dispatch))
         .route("/dav/", axum::routing::any(handle_dav_dispatch))
         .route("/dav/*path", axum::routing::any(handle_dav_dispatch))
@@ -221,26 +338,31 @@ pub async fn run_server(state: AppState, app: tauri::AppHandle) {
         .fallback(fallback_logger)
         .with_state(shared_state);
 
-    let config_arc = get_config();
-    let config = config_arc.lock().await.clone();
-    let port = config.port;
-
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
-        .await
-        .unwrap();
+    let port = listener
+        .local_addr()
+        .map(|address| address.port())
+        .unwrap_or(0);
+    let config = get_config().lock().await.clone();
     println!(
         "[PROXY] Local Video Streaming Proxy listening on port {}",
         port
     );
     println!(
-        "[PROXY] WebDAV Mount available at http://127.0.0.1:{}/dav (User: {}, Pass: {})",
+        "[PROXY] WebDAV is listening on all interfaces: http://<LAN-IP>:{}/dav (User: {}, Pass: {})",
         port, config.username, config.password
     );
     println!(
         "[MCP] Agent HTTP Endpoint ready at http://127.0.0.1:{}/mcp",
         port
     );
-    axum::serve(listener, app_router).await.unwrap();
+    if let Err(error) = axum::serve(listener, app_router).await {
+        eprintln!("[WEBDAV] Server stopped unexpectedly: {error}");
+    }
+    let server_port = get_server_port();
+    let mut running_port = server_port.lock().await;
+    if *running_port == Some(port) {
+        *running_port = None;
+    }
 }
 
 async fn resolve_lanzou_media(
@@ -268,10 +390,15 @@ async fn resolve_lanzou_media(
     } else {
         let is_folder = node.node_type == crate::heriheri::NodeType::Directory
             || (node.chunks != "1" && !node.chunks.is_empty());
-        let lanzou = state.lanzou.lock().await;
-        let share_info = lanzou
-            .get_share_info(node.lanzou_id.clone(), is_folder)
-            .await?;
+        // Clone the HTTP/session state and release the global account mutex before doing network
+        // I/O. A slow share-info request must not freeze unrelated VFS commands in the UI.
+        let lanzou = state.lanzou.lock().await.clone();
+        let share_info = tokio::time::timeout(
+            CLOUD_RESOLVE_TIMEOUT,
+            lanzou.get_share_info(node.lanzou_id.clone(), is_folder),
+        )
+        .await
+        .map_err(|_| format!("Timed out requesting share information for VFS node {vfs_id}"))??;
 
         let url = if let Some(u) = share_info["new_url"].as_str() {
             u.to_string()
@@ -294,6 +421,41 @@ async fn resolve_lanzou_media(
     }
 }
 
+async fn resolve_lanzou_media_bounded(
+    vfs_id: u64,
+    state: &AppState,
+) -> Result<(String, String, Option<String>, usize), String> {
+    tokio::time::timeout(CLOUD_RESOLVE_TIMEOUT, resolve_lanzou_media(vfs_id, state))
+        .await
+        .map_err(|_| format!("Timed out resolving cloud metadata for VFS node {vfs_id}"))?
+}
+
+async fn resolve_direct_link_bounded(
+    downloader: &crate::lanzou_down::LanzouDownloader,
+    share_url: &str,
+    password: Option<&str>,
+) -> Result<String, String> {
+    tokio::time::timeout(
+        CLOUD_RESOLVE_TIMEOUT,
+        downloader.get_lanzou_direct_link(share_url, password),
+    )
+    .await
+    .map_err(|_| "Timed out resolving a Lanzou direct link".to_string())?
+}
+
+async fn resolve_folder_metadata_bounded(
+    downloader: &crate::lanzou_down::LanzouDownloader,
+    share_url: &str,
+    password: Option<&str>,
+) -> Result<Vec<serde_json::Value>, String> {
+    tokio::time::timeout(
+        CLOUD_RESOLVE_TIMEOUT,
+        downloader.get_lanzou_folder_metadata(share_url, password),
+    )
+    .await
+    .map_err(|_| "Timed out resolving Lanzou chunk metadata".to_string())?
+}
+
 // ========================================================
 // WEBDAV TRANSLATION LAYER (INFUSE / JELLYFIN)
 // ========================================================
@@ -301,10 +463,12 @@ fn get_resolved_children(
     tree: &crate::heriheri::VfsTree,
     pid: u64,
 ) -> Vec<(crate::heriheri::VfsNode, String)> {
-    let mut children: Vec<_> = tree.nodes.values()
+    let mut children: Vec<_> = tree
+        .nodes
+        .values()
         .filter(|n| n.pid == pid && !n.is_deleted && !n.is_trashed)
         .collect();
-    
+
     // Sort deterministically by ID (oldest first) to stabilize Syncs
     children.sort_by_key(|n| n.id);
 
@@ -430,7 +594,13 @@ async fn handle_dav_dispatch(
                 "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<D:multistatus xmlns:D=\"DAV:\">\n",
             );
 
-            append_propfind_node(&mut xml, is_dir, current_node.as_ref(), &resolved_node_name, p);
+            append_propfind_node(
+                &mut xml,
+                is_dir,
+                current_node.as_ref(),
+                &resolved_node_name,
+                p,
+            );
 
             if depth == "1" && is_dir {
                 let children = get_resolved_children(tree, current_id);
@@ -441,7 +611,13 @@ async fn handle_dav_dispatch(
                         format!("{}/{}", p, resolved_name)
                     };
                     let child_is_dir = child.node_type == crate::heriheri::NodeType::Directory;
-                    append_propfind_node(&mut xml, child_is_dir, Some(&child), &resolved_name, &child_path);
+                    append_propfind_node(
+                        &mut xml,
+                        child_is_dir,
+                        Some(&child),
+                        &resolved_name,
+                        &child_path,
+                    );
                 }
             }
             xml.push_str("</D:multistatus>");
@@ -458,15 +634,21 @@ async fn handle_dav_dispatch(
             }
 
             if method.as_str() == "HEAD" {
-                let size = current_node.as_ref()
-                    .map(|n| n.size.parse::<u64>().unwrap_or_else(|_| parse_size_to_bytes(&n.size)))
+                let size = current_node
+                    .as_ref()
+                    .map(|n| {
+                        n.size
+                            .parse::<u64>()
+                            .unwrap_or_else(|_| parse_size_to_bytes(&n.size))
+                    })
                     .unwrap_or(0);
-                
-                let ext = current_node.as_ref()
+
+                let ext = current_node
+                    .as_ref()
                     .and_then(|n| n.name.split('.').last())
                     .unwrap_or("")
                     .to_lowercase();
-                
+
                 let content_type = match ext.as_str() {
                     "mp4" => "video/mp4",
                     "mkv" => "video/x-matroska",
@@ -531,8 +713,6 @@ fn append_propfind_node(
         href.push('/');
     }
 
-    let name = node.map(|n| n.name.as_str()).unwrap_or("Root");
-
     xml.push_str("  <D:response>\n");
     xml.push_str(&format!("    <D:href>{}</D:href>\n", href));
     xml.push_str("    <D:propstat>\n");
@@ -565,147 +745,235 @@ fn append_propfind_node(
 // ========================================================
 // CORE STREAMING PROXY
 // ========================================================
+async fn handle_stream_head(
+    Path(vfs_id): Path<u64>,
+    AxumState(state): AxumState<Arc<AppState>>,
+) -> Response {
+    let vfs = state.vfs.lock().await;
+    let Some(node) = vfs.as_ref().and_then(|tree| tree.nodes.get(&vfs_id)) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if node.node_type == crate::heriheri::NodeType::Directory {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let total_size = parse_size_to_bytes(&node.size);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, total_size.to_string())
+        .header(header::CONTENT_TYPE, content_type_for_name(&node.name))
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
 async fn handle_stream(
     Path(vfs_id): Path<u64>,
     AxumState(state): AxumState<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let cache = get_cache();
-    let mut cached_media = None;
+    println!(
+        "[STREAM] Request for VFS {vfs_id}, range={}",
+        headers
+            .get(header::RANGE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("full")
+    );
 
-    // --- 1. Check Memory Cache ---
-    {
-        let mut lock = cache.lock().await;
-        if let Some(entry) = lock.get(&vfs_id) {
-            if Instant::now() < entry.expires_at {
-                cached_media = Some(entry.clone());
-            } else {
-                lock.remove(&vfs_id);
-            }
-        }
-    }
-
-    // --- 2. Resolve & Cache if Missing ---
-    let media = match cached_media {
+    // --- 1. Resolve & cache metadata/direct links with one resolver per VFS node. ---
+    let media = match cached_media(vfs_id).await {
         Some(m) => m,
         None => {
-            println!("[PROXY] Cache Miss. Resolving from Cloud...");
-            let (chunks_str, share_url, file_pwd, total_size) =
-                match resolve_lanzou_media(vfs_id, &state).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        println!("[PROXY] Failed to resolve metadata: {}", e);
-                        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
-                    }
-                };
-
-            let downloader = state.downloader.lock().await.clone();
-            let mut urls = Vec::new();
-
-            if chunks_str == "1" || chunks_str.is_empty() {
-                let direct_url = match downloader
-                    .get_lanzou_direct_link(&share_url, file_pwd.as_deref())
-                    .await
-                {
-                    Ok(u) => u,
-                    Err(e) => {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-                    }
-                };
-                urls.push(direct_url);
+            let resolve_lock = media_resolve_lock(vfs_id).await;
+            let _resolve_guard = resolve_lock.lock().await;
+            if let Some(media) = cached_media(vfs_id).await {
+                media
             } else {
-                let mut all_files = match downloader
-                    .get_lanzou_folder_metadata(&share_url, file_pwd.as_deref())
+                println!("[STREAM] VFS {vfs_id}: resolving cloud metadata...");
+                let (chunks_str, share_url, file_pwd, total_size) =
+                    match resolve_lanzou_media_bounded(vfs_id, &state).await {
+                        Ok(res) => res,
+                        Err(e) => {
+                            println!("[PROXY] Failed to resolve metadata: {}", e);
+                            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+                        }
+                    };
+
+                let downloader = state.downloader.lock().await.clone();
+                let mut urls = Vec::new();
+
+                if chunks_str == "1" || chunks_str.is_empty() {
+                    let direct_url = match resolve_direct_link_bounded(
+                        &downloader,
+                        &share_url,
+                        file_pwd.as_deref(),
+                    )
                     .await
-                {
-                    Ok(f) => f,
-                    Err(e) => {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                    {
+                        Ok(u) => u,
+                        Err(e) => {
+                            eprintln!("[STREAM] VFS {vfs_id}: direct-link resolution failed: {e}");
+                            return (StatusCode::BAD_GATEWAY, e).into_response();
+                        }
+                    };
+                    urls.push(direct_url);
+                } else {
+                    let mut all_files = match resolve_folder_metadata_bounded(
+                        &downloader,
+                        &share_url,
+                        file_pwd.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(f) => f,
+                        Err(e) => {
+                            eprintln!("[STREAM] VFS {vfs_id}: chunk metadata failed: {e}");
+                            return (StatusCode::BAD_GATEWAY, e).into_response();
+                        }
+                    };
+
+                    let expected_chunks = chunks_str.parse::<usize>().map_err(|_| ()).ok();
+                    if expected_chunks.is_none() {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Invalid chunk count '{chunks_str}' for VFS node {vfs_id}"),
+                        )
+                            .into_response();
                     }
+
+                    all_files.sort_by(|a, b| {
+                        let na = a
+                            .get("name_all")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or_else(|| {
+                                a.get("name").and_then(|n| n.as_str()).unwrap_or("")
+                            });
+                        let nb = b
+                            .get("name_all")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or_else(|| {
+                                b.get("name").and_then(|n| n.as_str()).unwrap_or("")
+                            });
+
+                        chunk_index_from_name(na).cmp(&chunk_index_from_name(nb))
+                    });
+
+                    let indexes: Option<Vec<u32>> = all_files
+                        .iter()
+                        .map(|file| {
+                            file.get("name_all")
+                                .and_then(|name| name.as_str())
+                                .or_else(|| file.get("name").and_then(|name| name.as_str()))
+                                .and_then(chunk_index_from_name)
+                        })
+                        .collect();
+                    let expected_indexes: Vec<u32> =
+                        (1..=expected_chunks.unwrap_or_default() as u32).collect();
+                    if indexes.as_deref() != Some(expected_indexes.as_slice()) {
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            format!("Cloud folder for VFS node {vfs_id} has missing, duplicate, or unrecognized chunk indexes"),
+                        )
+                            .into_response();
+                    }
+
+                    let parsed_share_url = match reqwest::Url::parse(&share_url) {
+                        Ok(url) => url,
+                        Err(error) => {
+                            return (
+                                StatusCode::BAD_GATEWAY,
+                                format!("Invalid cloud share URL: {error}"),
+                            )
+                                .into_response();
+                        }
+                    };
+                    let Some(host) = parsed_share_url.host_str() else {
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            "Cloud share URL has no host".to_string(),
+                        )
+                            .into_response();
+                    };
+                    let base_file_url = format!("{}://{}", parsed_share_url.scheme(), host);
+
+                    for file in all_files {
+                        let id = file.get("id").and_then(|u| u.as_str()).unwrap_or("");
+                        if id.is_empty() {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "Chunk ID missing")
+                                .into_response();
+                        }
+                        urls.push(format!("{}/{}", base_file_url, id)); // Store Share URLs, not Direct URLs!
+                    }
+                    if urls.len() != expected_chunks.unwrap_or_default() {
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            format!(
+                            "Cloud folder for VFS node {vfs_id} contains {} chunks; expected {}",
+                            urls.len(),
+                            expected_chunks.unwrap_or_default()
+                        ),
+                        )
+                            .into_response();
+                    }
+                }
+
+                let direct_urls = if chunks_str == "1" || chunks_str.is_empty() {
+                    urls.iter()
+                        .map(|url| {
+                            Some(CachedDirectUrl {
+                                url: url.clone(),
+                                expires_at: Instant::now() + DIRECT_LINK_TTL,
+                            })
+                        })
+                        .collect()
+                } else {
+                    vec![None; urls.len()]
+                };
+                let new_entry = CachedMedia {
+                    chunks_str,
+                    total_size,
+                    urls,
+                    chunk_password: file_pwd,
+                    direct_urls,
+                    expires_at: Instant::now() + Duration::from_secs(300),
                 };
 
-                let re_legacy = regex::Regex::new(r"_part(\d+)\.iso").unwrap();
-                let re_covert = regex::Regex::new(r"^[0-9a-f]{32}([0-9a-f]{4})\.zip$").unwrap();
-                
-                all_files.sort_by(|a, b| {
-                    let na = a.get("name_all").and_then(|n| n.as_str()).unwrap_or_else(|| a.get("name").and_then(|n| n.as_str()).unwrap_or(""));
-                    let nb = b.get("name_all").and_then(|n| n.as_str()).unwrap_or_else(|| b.get("name").and_then(|n| n.as_str()).unwrap_or(""));
-
-                    let mut get_idx = |name: &str| -> u32 {
-                        if let Some(idx) = decrypt_chunk_filename(name) { return idx; }
-                        if let Some(caps) = re_covert.captures(name) { return u32::from_str_radix(&caps[1], 16).unwrap_or(0); }
-                        if let Some(caps) = re_legacy.captures(name) { return caps[1].parse::<u32>().unwrap_or(0); }
-                        0
-                    };
-                    get_idx(na).cmp(&get_idx(nb))
-                });
-
-                let parsed_share_url = reqwest::Url::parse(&share_url).unwrap();
-                let base_file_url = format!("{}://{}", parsed_share_url.scheme(), parsed_share_url.host_str().unwrap());
-
-                for file in all_files {
-                    let id = file.get("id").and_then(|u| u.as_str()).unwrap_or("");
-                    if id.is_empty() { return (StatusCode::INTERNAL_SERVER_ERROR, "Chunk ID missing").into_response(); }
-                    urls.push(format!("{}/{}", base_file_url, id)); // Store Share URLs, not Direct URLs!
-                }
+                get_cache().lock().await.insert(vfs_id, new_entry.clone());
+                println!(
+                    "[STREAM] VFS {vfs_id}: metadata ready ({} object(s), {} bytes)",
+                    new_entry.urls.len(),
+                    new_entry.total_size
+                );
+                new_entry
             }
-
-            let new_entry = CachedMedia {
-                chunks_str,
-                total_size,
-                urls,
-                expires_at: Instant::now() + Duration::from_secs(300),
-            };
-
-            cache.lock().await.insert(vfs_id, new_entry.clone());
-            println!("[PROXY] Cloud Links Cached Successfully!");
-            new_entry
         }
     };
 
     let total_size = media.total_size;
     let chunks_str_clone = media.chunks_str.clone();
 
-    // --- Dynamic Prefetch Clamp Algorithm ---
-    let calculated_clamp = (total_size as f64 * 0.005) as usize;
-    let prefetch_clamp = calculated_clamp.clamp(2 * 1024 * 1024, 10 * 1024 * 1024);
+    if total_size == 0 {
+        return (StatusCode::NO_CONTENT, HeaderMap::new(), "").into_response();
+    }
 
     // --- 3. Parse Byte Range ---
-    let mut start_bytes = 0;
-    let mut end_bytes = total_size - 1;
-    let mut is_partial = false;
-
-    if let Some(range_header) = headers.get(header::RANGE).and_then(|r| r.to_str().ok()) {
-        if let Some(ranges) = range_header.strip_prefix("bytes=") {
-            let parts: Vec<&str> = ranges.split('-').collect();
-            if !parts.is_empty() {
-                if let Ok(s) = parts[0].parse::<usize>() {
-                    start_bytes = s;
-                    is_partial = true;
-                }
-                if parts.len() > 1 && !parts[1].is_empty() {
-                    if let Ok(e) = parts[1].parse::<usize>() {
-                        end_bytes = e.min(total_size - 1);
-                    }
-                }
-            }
+    let requested_range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    let (start_bytes, end_bytes, is_partial) = match parse_byte_range(requested_range, total_size) {
+        Ok(range) => range,
+        Err(()) => {
+            return (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{}", total_size))],
+                "Range Out of Bounds",
+            )
+                .into_response();
         }
-    }
-
-    if start_bytes >= total_size {
-        return (
-            StatusCode::RANGE_NOT_SATISFIABLE,
-            [(header::CONTENT_RANGE, format!("bytes */{}", total_size))],
-            "Range Out of Bounds",
-        )
-            .into_response();
-    }
+    };
 
     let chunk_length = end_bytes - start_bytes + 1;
-    let req_client = Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .build()
-        .unwrap();
+    let req_client = get_stream_client();
 
     let state_clone = Arc::clone(&state);
 
@@ -718,20 +986,73 @@ async fn handle_stream(
                 let mut current_global_ptr = start_bytes;
 
                 while current_global_ptr <= end_bytes {
-                    let clamped_end = std::cmp::min(end_bytes, current_global_ptr + prefetch_clamp - 1);
                     let mut retry = 0;
 
                     loop {
-                        let resp = req_client.get(&active_url)
-                            .header("Range", format!("bytes={}-{}", current_global_ptr, clamped_end))
-                            .send()
-                            .await
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                        let resp = tokio::time::timeout(
+                            UPSTREAM_REQUEST_TIMEOUT,
+                            req_client.get(&active_url)
+                                .header("Range", format!("bytes={}-{}", current_global_ptr, end_bytes))
+                                .send(),
+                        )
+                        .await
+                        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "Upstream media request timed out before headers"))?
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-                        if resp.status().is_success() {
-                            let full_chunk = resp.bytes().await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                            current_global_ptr += full_chunk.len() as usize;
-                            yield full_chunk;
+                        if resp.status().is_success() && (current_global_ptr == 0 || resp.status().as_u16() == 206) {
+                            let mut bytes = resp.bytes_stream();
+                            let mut delivered = 0usize;
+                            let requested = end_bytes - current_global_ptr + 1;
+                            let mut interrupted_before_data = false;
+                            loop {
+                                let packet = match tokio::time::timeout(UPSTREAM_PACKET_TIMEOUT, bytes.next()).await {
+                                    Ok(Some(packet)) => packet,
+                                    Ok(None) => break,
+                                    Err(_) if delivered > 0 => {
+                                        println!("[PROXY] Upstream body stalled after {delivered} bytes. Resuming.");
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        println!("[PROXY] Upstream body stalled before data. Refreshing the link.");
+                                        interrupted_before_data = true;
+                                        break;
+                                    }
+                                };
+                                let packet = match packet {
+                                    Ok(packet) => packet,
+                                    Err(error) if delivered > 0 => {
+                                        println!("[PROXY] Upstream range interrupted after {delivered} bytes: {error}. Resuming.");
+                                        break;
+                                    }
+                                    Err(error) => {
+                                        println!("[PROXY] Upstream range failed before data: {error}. Refreshing the link.");
+                                        interrupted_before_data = true;
+                                        break;
+                                    }
+                                };
+                                if packet.is_empty() { continue; }
+                                let take = packet.len().min(requested - delivered);
+                                if take == 0 { break; }
+                                let packet = packet.slice(..take);
+                                delivered += take;
+                                current_global_ptr += take;
+                                yield packet;
+                                if delivered == requested { break; }
+                            }
+                            if interrupted_before_data {
+                                if retry > 0 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent upstream stream error"))?; }
+                                retry += 1;
+                                get_cache().lock().await.remove(&vfs_id);
+                                let (_, new_share_url, new_file_pwd, _) = resolve_lanzou_media_bounded(vfs_id, &state_clone)
+                                    .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                                let downloader = state_clone.downloader.lock().await.clone();
+                                active_url = resolve_direct_link_bounded(&downloader, &new_share_url, new_file_pwd.as_deref())
+                                    .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                                continue;
+                            }
+                            if delivered == 0 {
+                                Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "CDN returned an empty media range"))?;
+                            }
                             break;
                         } else {
                             if retry > 0 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent CDN Error"))?; }
@@ -740,17 +1061,22 @@ async fn handle_stream(
                             println!("[PROXY] CDN Rejected Link (HTTP {}). Auto-refreshing cache...", resp.status());
                             get_cache().lock().await.remove(&vfs_id);
 
-                            let (_, new_share_url, new_file_pwd, _) = resolve_lanzou_media(vfs_id, &state_clone)
+                            let (_, new_share_url, new_file_pwd, _) = resolve_lanzou_media_bounded(vfs_id, &state_clone)
                                 .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
                             let downloader = state_clone.downloader.lock().await.clone();
-                            active_url = downloader.get_lanzou_direct_link(&new_share_url, new_file_pwd.as_deref())
+                            active_url = resolve_direct_link_bounded(&downloader, &new_share_url, new_file_pwd.as_deref())
                                 .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
                             let new_entry = CachedMedia {
                                 chunks_str: chunks_str_clone.clone(),
                                 total_size,
                                 urls: vec![active_url.clone()],
+                                chunk_password: new_file_pwd,
+                                direct_urls: vec![Some(CachedDirectUrl {
+                                    url: active_url.clone(),
+                                    expires_at: Instant::now() + DIRECT_LINK_TTL,
+                                })],
                                 expires_at: Instant::now() + Duration::from_secs(300),
                             };
                             get_cache().lock().await.insert(vfs_id, new_entry);
@@ -762,118 +1088,170 @@ async fn handle_stream(
             Box::pin(stream)
         } else {
             let active_urls = media.urls.clone();
+            let chunk_password = media.chunk_password.clone();
             let downloader_stream = state_clone.downloader.lock().await.clone();
 
             let stream = async_stream::try_stream! {
                 let mut remaining_to_send = chunk_length;
                 let mut current_global_ptr = start_bytes;
-
-                // MINIMUM FIX: Use a HashMap to queue multiple background pre-resolve tasks
                 let mut pre_resolve_tasks: HashMap<usize, tokio::task::JoinHandle<Result<String, String>>> = HashMap::new();
 
                 while remaining_to_send > 0 {
                     let chunk_idx = current_global_ptr / CHUNK_SIZE;
-                    if chunk_idx >= active_urls.len() { break; }
+                    if chunk_idx >= active_urls.len() {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            format!("Missing cloud chunk {}", chunk_idx + 1),
+                        ))?;
+                    }
 
                     let chunk_local_start = current_global_ptr % CHUNK_SIZE;
                     let chunk_local_end = std::cmp::min(CHUNK_SIZE - 1, chunk_local_start + remaining_to_send - 1);
-                    let clamped_end = std::cmp::min(chunk_local_end, chunk_local_start + prefetch_clamp - 1);
-                    
                     let chunk_share_url = &active_urls[chunk_idx];
                     let mut retry = 0;
-                    let mut direct_url = String::new();
+                    let mut direct_url = cached_direct_url(vfs_id, chunk_idx).await.unwrap_or_default();
 
                     loop {
                         if direct_url.is_empty() {
                             if let Some(task) = pre_resolve_tasks.remove(&chunk_idx) {
-                                direct_url = task.await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                            } else {
-                                direct_url = downloader_stream.get_lanzou_direct_link(chunk_share_url, None).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                                match task.await {
+                                    Ok(Ok(url)) => direct_url = url,
+                                    Ok(Err(error)) => {
+                                        println!("[STREAM] Lookahead for chunk {} failed: {error}. Resolving again.", chunk_idx + 1);
+                                    }
+                                    Err(error) => {
+                                        println!("[STREAM] Lookahead task for chunk {} was unavailable: {error}. Resolving again.", chunk_idx + 1);
+                                    }
+                                }
                             }
+                            if direct_url.is_empty() {
+                                direct_url = resolve_cached_chunk_link(vfs_id, chunk_idx, &downloader_stream, chunk_share_url, chunk_password.as_deref()).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                            }
+                            store_direct_url(vfs_id, chunk_idx, direct_url.clone()).await;
                         }
 
-                        for offset in 1..=2 {
+                        for offset in 1..=DIRECT_LINK_LOOKAHEAD {
                             let target_idx = chunk_idx + offset;
-                            if target_idx < active_urls.len() && !pre_resolve_tasks.contains_key(&target_idx) {
+                            if target_idx < active_urls.len()
+                                && cached_direct_url(vfs_id, target_idx).await.is_none()
+                                && !pre_resolve_tasks.contains_key(&target_idx)
+                            {
                                 let dl_clone = downloader_stream.clone();
                                 let next_share_url = active_urls[target_idx].clone();
+                                let next_password = chunk_password.clone();
+                                let prefetch_vfs_id = vfs_id;
                                 pre_resolve_tasks.insert(target_idx, tokio::spawn(async move {
-                                    dl_clone.get_lanzou_direct_link(&next_share_url, None).await
+                                    resolve_cached_chunk_link(prefetch_vfs_id, target_idx, &dl_clone, &next_share_url, next_password.as_deref()).await
                                 }));
                             }
                         }
 
-                        let resp_res = req_client.get(&direct_url)
-                            .header("Range", format!("bytes={}-{}", chunk_local_start, clamped_end))
-                            .send()
-                            .await;
+                        let resp_res = tokio::time::timeout(
+                            UPSTREAM_REQUEST_TIMEOUT,
+                            req_client.get(&direct_url)
+                                .header("Range", format!("bytes={}-{}", chunk_local_start, chunk_local_end))
+                                .send(),
+                        ).await;
 
                         match resp_res {
-                            Ok(resp) => {
+                            Ok(Ok(resp)) => {
                                 let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
-                                
-                                if resp.status().is_success() && !ctype.contains("text/html") {
-                                    let full_chunk = resp.bytes().await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                                    current_global_ptr += full_chunk.len() as usize;
-                                    remaining_to_send -= full_chunk.len() as usize;
-                                    yield full_chunk;
+
+                                let honors_range = chunk_local_start == 0 || resp.status().as_u16() == 206;
+                                if resp.status().is_success() && honors_range && !ctype.contains("text/html") {
+                                    let mut bytes = resp.bytes_stream();
+                                    let mut delivered = 0usize;
+                                    let requested = chunk_local_end - chunk_local_start + 1;
+                                    let mut interrupted_before_data = false;
+                                    loop {
+                                        let packet = match tokio::time::timeout(UPSTREAM_PACKET_TIMEOUT, bytes.next()).await {
+                                            Ok(Some(packet)) => packet,
+                                            Ok(None) => break,
+                                            Err(_) if delivered > 0 => {
+                                                println!("[PROXY] Cloud chunk {chunk_idx} stalled after {delivered} bytes. Resuming.");
+                                                break;
+                                            }
+                                            Err(_) => {
+                                                println!("[PROXY] Cloud chunk {chunk_idx} stalled before data. Refreshing the link.");
+                                                interrupted_before_data = true;
+                                                break;
+                                            }
+                                        };
+                                        let packet = match packet {
+                                            Ok(packet) => packet,
+                                            Err(error) if delivered > 0 => {
+                                                println!("[PROXY] Cloud chunk {chunk_idx} interrupted after {delivered} bytes: {error}. Resuming.");
+                                                break;
+                                            }
+                                            Err(error) => {
+                                                println!("[PROXY] Cloud chunk {chunk_idx} failed before data: {error}. Refreshing the link.");
+                                                interrupted_before_data = true;
+                                                break;
+                                            }
+                                        };
+                                        if packet.is_empty() { continue; }
+                                        let take = packet.len().min(requested - delivered);
+                                        if take == 0 { break; }
+                                        let packet = packet.slice(..take);
+                                        delivered += take;
+                                        current_global_ptr += take;
+                                        remaining_to_send = remaining_to_send.saturating_sub(take);
+                                        yield packet;
+                                        if delivered == requested { break; }
+                                    }
+                                    if interrupted_before_data {
+                                        if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent upstream stream error"))?; }
+                                        retry += 1;
+                                        invalidate_direct_url(vfs_id, chunk_idx).await;
+                                        direct_url = String::new();
+                                        continue;
+                                    }
+                                    if delivered == 0 {
+                                        Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "CDN returned an empty media chunk"))?;
+                                    }
                                     break; // Success!
                                 } else {
                                     println!("[PROXY] CDN Rejected Link (HTTP {} | {}). Retrying JIT...", resp.status(), ctype);
                                     if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent CDN Error"))?; }
                                     retry += 1;
-                                    
-                                    // Flush bad URL and abort ALL queued tasks to force a fresh resolve
+                                    invalidate_direct_url(vfs_id, chunk_idx).await;
                                     direct_url = String::new();
-                                    for (_, task) in pre_resolve_tasks.drain() { task.abort(); }
                                 }
                             },
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 println!("[PROXY] Network Error: {}", e);
                                 if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Network Error"))?; }
                                 retry += 1;
+                                invalidate_direct_url(vfs_id, chunk_idx).await;
+                                direct_url = String::new();
+                            },
+                            Err(_) => {
+                                println!("[PROXY] Cloud chunk {chunk_idx} timed out before response headers");
+                                if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Cloud chunk request timed out"))?; }
+                                retry += 1;
+                                invalidate_direct_url(vfs_id, chunk_idx).await;
+                                direct_url = String::new();
                             }
                         }
                     }
                 }
+                // Dropping JoinHandles detaches unfinished lookahead work. Each task stores its
+                // result in the shared cache, so a later range request can reuse it immediately.
+                drop(pre_resolve_tasks);
             };
             Box::pin(stream)
         };
 
     // --- 5. Return HTTP Headers ---
-    let ext = {
+    let media_name = {
         let vfs_guard = state.vfs.lock().await;
         vfs_guard
             .as_ref()
             .and_then(|t| t.nodes.get(&vfs_id))
-            .and_then(|n| n.name.split('.').last())
-            .unwrap_or("")
-            .to_lowercase()
+            .map(|n| n.name.clone())
+            .unwrap_or_default()
     };
-
-    let content_type = match ext.as_str() {
-        "mp4" => "video/mp4",
-        "mkv" => "video/x-matroska",
-        "webm" => "video/webm",
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        "flac" => "audio/flac",
-        "pdf" => "application/pdf",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "txt" | "c" | "cpp" | "rs" | "py" | "js" | "ts" | "md" | "log" => {
-            "text/plain; charset=utf-8"
-        }
-        "json" => "application/json",
-        "xls" => "application/vnd.ms-excel",
-        "doc" => "application/msword",
-        "ppt" => "application/vnd.ms-powerpoint",
-        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        _ => "application/octet-stream",
-    };
+    let content_type = content_type_for_name(&media_name);
 
     let mut response_builder = Response::builder()
         .header(header::ACCEPT_RANGES, "bytes")
@@ -899,6 +1277,108 @@ async fn handle_stream(
         .unwrap()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{parse_byte_range, parse_size_to_bytes, select_lan_ipv4};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn parses_full_open_and_suffix_ranges() {
+        assert_eq!(parse_byte_range(None, 100), Ok((0, 99, false)));
+        assert_eq!(
+            parse_byte_range(Some("bytes=10-19"), 100),
+            Ok((10, 19, true))
+        );
+        assert_eq!(parse_byte_range(Some("bytes=90-"), 100), Ok((90, 99, true)));
+        assert_eq!(parse_byte_range(Some("bytes=-10"), 100), Ok((90, 99, true)));
+        assert_eq!(parse_byte_range(Some("bytes=-200"), 100), Ok((0, 99, true)));
+    }
+
+    #[test]
+    fn rejects_invalid_or_multipart_ranges() {
+        assert!(parse_byte_range(Some("bytes=100-"), 100).is_err());
+        assert!(parse_byte_range(Some("bytes=20-10"), 100).is_err());
+        assert!(parse_byte_range(Some("bytes=0-1,3-4"), 100).is_err());
+        assert!(parse_byte_range(Some("items=0-1"), 100).is_err());
+        assert!(parse_byte_range(Some("bytes=-0"), 100).is_err());
+        assert!(parse_byte_range(None, 0).is_err());
+    }
+
+    #[test]
+    fn parses_vfs_byte_sizes() {
+        assert_eq!(parse_size_to_bytes("123456"), 123456);
+        assert_eq!(parse_size_to_bytes("1.5 MB"), 1_572_864);
+        assert_eq!(parse_size_to_bytes("2GB"), 2_147_483_648);
+    }
+
+    #[test]
+    fn selects_a_physical_private_lan_over_virtual_addresses() {
+        let interfaces = vec![
+            (
+                "Mihomo Tunnel".to_string(),
+                "198.18.0.1".parse::<IpAddr>().unwrap(),
+            ),
+            (
+                "VMware Network Adapter".to_string(),
+                "192.168.121.1".parse::<IpAddr>().unwrap(),
+            ),
+            (
+                "Wi-Fi".to_string(),
+                "192.168.1.27".parse::<IpAddr>().unwrap(),
+            ),
+            (
+                "Loopback".to_string(),
+                "127.0.0.1".parse::<IpAddr>().unwrap(),
+            ),
+        ];
+
+        assert_eq!(
+            select_lan_ipv4(interfaces),
+            Some(("Wi-Fi".to_string(), Ipv4Addr::new(192, 168, 1, 27)))
+        );
+    }
+
+    #[test]
+    fn does_not_advertise_benchmark_or_carrier_nat_addresses() {
+        let interfaces = vec![
+            ("Proxy".to_string(), "198.18.0.1".parse::<IpAddr>().unwrap()),
+            (
+                "Carrier".to_string(),
+                "100.64.0.5".parse::<IpAddr>().unwrap(),
+            ),
+        ];
+
+        assert_eq!(select_lan_ipv4(interfaces), None);
+    }
+}
+
+fn content_type_for_name(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "mp4" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "txt" | "c" | "cpp" | "rs" | "py" | "js" | "ts" | "md" | "log" => {
+            "text/plain; charset=utf-8"
+        }
+        "json" => "application/json",
+        "xls" => "application/vnd.ms-excel",
+        "doc" => "application/msword",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    }
+}
+
 // ========================================================
 // TAURI FRONTEND COMMANDS
 // ========================================================
@@ -915,9 +1395,10 @@ pub async fn set_webdav_config(
     username: String,
     password: String,
 ) -> Result<(), String> {
+    let active_port = *get_server_port().lock().await;
     let config_arc = get_config();
     let mut config = config_arc.lock().await;
-    config.port = port;
+    config.port = active_port.unwrap_or(port);
     config.username = username;
     config.password = password;
     Ok(())
@@ -930,9 +1411,18 @@ pub async fn boot_webdav_server(
     password: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    if SERVER_STARTED.swap(true, Ordering::SeqCst) {
-        return Ok(());
+) -> Result<u16, String> {
+    let server_port = get_server_port();
+    let mut running_port = server_port.lock().await;
+
+    if let Some(active_port) = *running_port {
+        let config_arc = get_config();
+        let mut config = config_arc.lock().await;
+        config.port = active_port;
+        config.username = username;
+        config.password = password;
+        println!("[WEBDAV] Server is already ready on 0.0.0.0:{active_port}");
+        return Ok(active_port);
     }
 
     {
@@ -943,25 +1433,149 @@ pub async fn boot_webdav_server(
         config.password = password;
     }
 
+    // Bind before reporting success. The previous detached bind could panic after this command
+    // returned Ok and permanently leave the process believing that its server was running.
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+        .await
+        .map_err(|error| {
+            format!("Unable to bind WebDAV/stream server to 0.0.0.0:{port}: {error}")
+        })?;
+    let bound_port = listener
+        .local_addr()
+        .map_err(|error| format!("Unable to inspect WebDAV listener: {error}"))?
+        .port();
+    *running_port = Some(bound_port);
+    drop(running_port);
+
     let app_state = state.inner().clone();
     tokio::spawn(async move {
-        run_server(app_state, app).await;
+        run_server(listener, app_state, app).await;
     });
 
-    Ok(())
+    Ok(bound_port)
+}
+
+#[tauri::command]
+pub async fn prepare_media_stream(vfs_id: u64, port: u16) -> Result<String, String> {
+    let running_port = *get_server_port().lock().await;
+    if running_port != Some(port) {
+        return Err(format!(
+            "Local stream server is not running on the requested port {port}"
+        ));
+    }
+
+    let uri = format!("http://127.0.0.1:{port}/stream/{vfs_id}");
+    println!("[STREAM] Preflighting VFS {vfs_id} through {uri}");
+    let response = tokio::time::timeout(
+        CLOUD_RESOLVE_TIMEOUT + Duration::from_secs(15),
+        get_stream_client()
+            .get(&uri)
+            .header(reqwest::header::RANGE, "bytes=0-0")
+            .timeout(CLOUD_RESOLVE_TIMEOUT)
+            .send(),
+    )
+    .await
+    .map_err(|_| format!("Timed out preparing media stream for VFS node {vfs_id}"))?
+    .map_err(|error| format!("Unable to reach the local media stream: {error}"))?;
+
+    if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Media stream preparation failed with HTTP {status}: {detail}"
+        ));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("Unable to read the media preflight byte: {error}"))?;
+    if bytes.len() != 1 {
+        return Err(format!(
+            "Media stream preflight returned {} bytes instead of one",
+            bytes.len()
+        ));
+    }
+    println!("[STREAM] VFS {vfs_id} is ready for native playback");
+    Ok(uri)
 }
 
 #[tauri::command]
 pub fn get_local_ip() -> String {
-    // Zero-dependency trick to find the active local network IP
-    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("8.8.8.8:80").is_ok() {
-            if let Ok(addr) = socket.local_addr() {
-                return addr.ip().to_string();
-            }
+    match select_lan_ipv4(local_ip_address::list_afinet_netifas().unwrap_or_default()) {
+        Some((interface, address)) => {
+            println!("[WEBDAV] Advertising LAN interface '{interface}' at {address}");
+            address.to_string()
+        }
+        None => {
+            eprintln!("[WEBDAV] No phone-reachable private IPv4 interface was found");
+            "LAN address unavailable".to_string()
         }
     }
-    "192.168.x.x".to_string() // Safe fallback
+}
+
+fn select_lan_ipv4(interfaces: Vec<(String, IpAddr)>) -> Option<(String, Ipv4Addr)> {
+    interfaces
+        .into_iter()
+        .filter_map(|(name, address)| match address {
+            IpAddr::V4(address) => {
+                lan_address_score(&name, address).map(|score| (score, name, address))
+            }
+            IpAddr::V6(_) => None,
+        })
+        .max_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| right.2.octets().cmp(&left.2.octets()))
+        })
+        .map(|(_, name, address)| (name, address))
+}
+
+fn lan_address_score(interface: &str, address: Ipv4Addr) -> Option<i32> {
+    let [a, b, _, _] = address.octets();
+    // Only advertise RFC 1918 addresses. In particular, 198.18.0.0/15 is reserved for
+    // benchmarking and is commonly used by VPN/proxy virtual adapters; a phone on the physical
+    // LAN cannot route to it. Link-local, loopback, multicast, and carrier-NAT addresses are also
+    // inappropriate for a WebDAV URL intended for another device.
+    let mut score = match (a, b) {
+        (192, 168) => 300,
+        (10, _) => 240,
+        (172, 16..=31) => 220,
+        _ => return None,
+    };
+
+    let name = interface.to_ascii_lowercase();
+    if [
+        "wi-fi", "wifi", "wlan", "wireless", "ethernet", "en0", "en1", "eth0", "eth1",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
+    {
+        score += 100;
+    }
+    if [
+        "vpn",
+        "tun",
+        "tap",
+        "virtual",
+        "vmware",
+        "hyper-v",
+        "vethernet",
+        "vbox",
+        "docker",
+        "wsl",
+        "zerotier",
+        "tailscale",
+        "utun",
+        "bridge",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
+    {
+        score -= 250;
+    }
+    Some(score)
 }
 
 async fn handle_mcp_http(
@@ -971,4 +1585,76 @@ async fn handle_mcp_http(
 ) -> impl IntoResponse {
     let response = crate::mcp::handle_mcp_request(req, app).await;
     (StatusCode::OK, axum::Json(response))
+}
+
+fn get_stream_client() -> Client {
+    STREAM_CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .pool_idle_timeout(Duration::from_secs(90))
+                .pool_max_idle_per_host(8)
+                .tcp_keepalive(Duration::from_secs(30))
+                .connect_timeout(Duration::from_secs(12))
+                .build()
+                .expect("failed to build streaming HTTP client")
+        })
+        .clone()
+}
+
+async fn cached_direct_url(vfs_id: u64, chunk_index: usize) -> Option<String> {
+    let cache = get_cache();
+    let lock = cache.lock().await;
+    lock.get(&vfs_id)
+        .and_then(|media| media.direct_urls.get(chunk_index))
+        .and_then(Option::as_ref)
+        .filter(|entry| Instant::now() < entry.expires_at)
+        .map(|entry| entry.url.clone())
+}
+
+async fn store_direct_url(vfs_id: u64, chunk_index: usize, url: String) {
+    let cache = get_cache();
+    let mut lock = cache.lock().await;
+    if let Some(media) = lock.get_mut(&vfs_id) {
+        if chunk_index < media.direct_urls.len() {
+            media.direct_urls[chunk_index] = Some(CachedDirectUrl {
+                url,
+                expires_at: Instant::now() + DIRECT_LINK_TTL,
+            });
+        }
+    }
+}
+
+async fn invalidate_direct_url(vfs_id: u64, chunk_index: usize) {
+    let cache = get_cache();
+    let mut lock = cache.lock().await;
+    if let Some(media) = lock.get_mut(&vfs_id) {
+        if chunk_index < media.direct_urls.len() {
+            media.direct_urls[chunk_index] = None;
+        }
+    }
+}
+
+async fn resolve_cached_chunk_link(
+    vfs_id: u64,
+    chunk_index: usize,
+    downloader: &crate::lanzou_down::LanzouDownloader,
+    share_url: &str,
+    password: Option<&str>,
+) -> Result<String, String> {
+    if let Some(url) = cached_direct_url(vfs_id, chunk_index).await {
+        return Ok(url);
+    }
+    let resolve_lock = direct_resolve_lock(vfs_id, chunk_index).await;
+    let _resolve_guard = resolve_lock.lock().await;
+    if let Some(url) = cached_direct_url(vfs_id, chunk_index).await {
+        return Ok(url);
+    }
+    println!(
+        "[STREAM] VFS {vfs_id}: resolving direct URL for chunk {}",
+        chunk_index + 1
+    );
+    let url = resolve_direct_link_bounded(downloader, share_url, password).await?;
+    store_direct_url(vfs_id, chunk_index, url.clone()).await;
+    Ok(url)
 }

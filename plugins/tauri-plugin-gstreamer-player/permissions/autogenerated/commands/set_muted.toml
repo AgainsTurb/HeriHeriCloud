@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-muted"
+description = "Enables the set_muted command without any pre-configured scope."
+commands.allow = ["set_muted"]
+
+[[permission]]
+identifier = "deny-set-muted"
+description = "Denies the set_muted command without any pre-configured scope."
+commands.deny = ["set_muted"]

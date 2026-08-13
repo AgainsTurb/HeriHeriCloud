@@ -60,12 +60,22 @@ export default function App() {
   useEffect(() => {
     // 1. Read from disk or fallback to the system defaults immediately
     const saved = localStorage.getItem("heriheri_config");
-    const config = saved ? JSON.parse(saved) : {
+    const defaults = {
       enableWebDAV: true,
       webdavPort: 8888,
       webdavUser: "admin",
       webdavPass: "admin",
+      uploadBlacklist: ".DS_Store, desktop.ini, Thumbs.db",
     };
+    let config = defaults;
+    if (saved) {
+      try {
+        config = { ...defaults, ...JSON.parse(saved) };
+      } catch (error) {
+        console.error("Invalid saved configuration; restoring safe defaults.", error);
+        localStorage.setItem("heriheri_config", JSON.stringify(defaults));
+      }
+    }
     
     // 2. If it's a first-time boot, commit these defaults to disk so the file exists
     if (!saved) {

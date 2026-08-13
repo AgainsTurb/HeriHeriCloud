@@ -2,6 +2,7 @@
 # Node.js / React Frontend
 # -----------------------------
 node_modules/
+.gstreamer/
 dist/
 build/
 out/
@@ -30,6 +31,36 @@ Cargo.lock.bk
 src-tauri/gen/android/app/build/
 src-tauri/gen/apple/build/
 src-tauri/gen/apple/Externals/
+
+# -----------------------------
+# Local Plugin Toolchains / SDKs
+# -----------------------------
+# Keep plugin source, manifests, permissions, and setup scripts tracked. Ignore only
+# machine-generated caches and downloaded native SDK payloads.
+plugins/**/target/
+plugins/**/android/.gradle/
+plugins/**/android/.cxx/
+plugins/**/android/local.properties
+plugins/**/android/src/main/jniLibs/
+plugins/**/ios/.build/
+plugins/**/ios/DerivedData/
+plugins/**/ios/Package.resolved
+plugins/**/ios/Frameworks/*
+!plugins/**/ios/Frameworks/README.md
+
+# Local playback samples dropped at the repository root. App media assets under
+# public/ or src/ remain trackable.
+/*.mp4
+/*.mkv
+/*.mov
+/*.avi
+/*.webm
+/*.m2ts
+/*.ts
+/*.mp3
+/*.flac
+/*.wav
+/test-media/
 
 # -----------------------------
 # OS Generated Files

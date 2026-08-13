@@ -1,0 +1,30 @@
+[package]
+name = "tauri-plugin-gstreamer-player"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+links = "tauri-plugin-gstreamer-player"
+build = "build.rs"
+description = "Cross-platform GStreamer playback provider for HeriHeriCloud"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "tauri_plugin_gstreamer_player"
+crate-type = ["lib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", default-features = false, features = ["unstable"] }
+thiserror = "2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+gstreamer = "0.25.3"
+gstreamer-video = "0.25.3"
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri = { version = "2", default-features = false, features = ["wry"] }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

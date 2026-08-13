@@ -1,0 +1,20 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Allows HeriHeriCloud to control the native GStreamer player."
+permissions = [
+  "allow-open",
+  "allow-play",
+  "allow-pause",
+  "allow-stop",
+  "allow-seek",
+  "allow-set-volume",
+  "allow-set-muted",
+  "allow-set-rate",
+  "allow-set-looping",
+  "allow-select-audio-track",
+  "allow-select-subtitle-track",
+  "allow-set-subtitle-uri",
+  "allow-get-state",
+  "allow-capabilities",
+]

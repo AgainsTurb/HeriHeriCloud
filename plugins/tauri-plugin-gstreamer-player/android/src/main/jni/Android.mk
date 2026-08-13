@@ -1,0 +1,21 @@
+LOCAL_PATH := $(call my-dir)
+
+ifeq ($(strip $(GSTREAMER_ROOT_ANDROID)),)
+$(error GSTREAMER_ROOT_ANDROID or the HERI_GSTREAMER_ANDROID_ROOT Gradle property must point to the extracted GStreamer Android universal SDK)
+endif
+
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := heri_gstreamer_player
+LOCAL_SRC_FILES := native_player.c
+LOCAL_LDLIBS := -llog -landroid
+LOCAL_SHARED_LIBRARIES := gstreamer_android
+
+include $(BUILD_SHARED_LIBRARY)
+
+GSTREAMER_ROOT := $(GSTREAMER_ROOT_ANDROID)
+GSTREAMER_NDK_BUILD_PATH := $(GSTREAMER_ROOT)/share/gst-android/ndk-build
+include $(GSTREAMER_NDK_BUILD_PATH)/plugins.mk
+GSTREAMER_PLUGINS := $(GSTREAMER_PLUGINS_CORE) $(GSTREAMER_PLUGINS_PLAYBACK) $(GSTREAMER_PLUGINS_CODECS) $(GSTREAMER_PLUGINS_NET) $(GSTREAMER_PLUGINS_SYS)
+GSTREAMER_EXTRA_DEPS := gstreamer-video-1.0
+include $(GSTREAMER_NDK_BUILD_PATH)/gstreamer-1.0.mk

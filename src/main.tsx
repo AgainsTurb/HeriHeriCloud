@@ -6,6 +6,7 @@ import MediaPlayer from "./Windows/MediaPlayer";
 import ImageView from "./Windows/ImageView";
 import TextView from "./Windows/TextView";
 import DocView from "./Windows/DocView";
+import NativeMediaController from "./Windows/NativeMediaController";
 import "./i18n";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
@@ -20,6 +21,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
         <Route path="/image" element={<ImageView />} />
         <Route path="/text" element={<TextView />} />
         <Route path="/doc" element={<DocView />} />
+        <Route path="/native-player" element={<NativeMediaController />} />
       </Routes>
     </HashRouter>
   </React.StrictMode>,

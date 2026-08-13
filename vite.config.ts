@@ -41,8 +41,9 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. Rust sources and Cargo artifacts are watched by Tauri itself. Ignoring
+      // Cargo's target tree also avoids Windows EBUSY errors on loaded DLLs.
+      ignored: ["**/src-tauri/**", "**/target/**"],
     },
   },
 }));

@@ -1,8 +1,8 @@
 mod heriheri;
 mod lanzou;
 mod lanzou_down;
-mod webdav;
 mod mcp;
+mod webdav;
 use lanzou::{
     init_vfs_root, login, request_register_sms, set_lanzou_cookies, submit_register,
     vfs_batch_delete, vfs_control_task, vfs_create_folder, vfs_delete_item, vfs_download_file,
@@ -10,14 +10,16 @@ use lanzou::{
     vfs_get_current_pid, vfs_get_folder_tree, vfs_get_share_info, vfs_go_back,
     vfs_hard_delete_items, vfs_list_bin, vfs_list_dir, vfs_move_items, vfs_rename_item,
     vfs_rent_item, vfs_resolve_share_code, vfs_restore_items, vfs_search, vfs_sync_pull,
-    vfs_sync_push, vfs_update_speed_limits, vfs_upload_file, AppState, LanzouCloud,
-    vfs_update_blacklist
+    vfs_sync_push, vfs_update_blacklist, vfs_update_speed_limits, vfs_upload_file, AppState,
+    LanzouCloud,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
-use webdav::{boot_webdav_server, get_local_ip, get_webdav_config, set_webdav_config};
+use webdav::{
+    boot_webdav_server, get_local_ip, get_webdav_config, prepare_media_stream, set_webdav_config,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -34,6 +36,7 @@ pub fn run() {
     };
 
     let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_gstreamer_player::init())
         .plugin(tauri_plugin_keep_screen_on::init())
         .plugin(tauri_plugin_fs::init());
 
@@ -94,6 +97,7 @@ pub fn run() {
             get_webdav_config,
             set_webdav_config,
             boot_webdav_server,
+            prepare_media_stream,
             get_local_ip,
             vfs_update_blacklist
         ])

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-select-subtitle-track"
+description = "Enables the select_subtitle_track command without any pre-configured scope."
+commands.allow = ["select_subtitle_track"]
+
+[[permission]]
+identifier = "deny-select-subtitle-track"
+description = "Denies the select_subtitle_track command without any pre-configured scope."
+commands.deny = ["select_subtitle_track"]

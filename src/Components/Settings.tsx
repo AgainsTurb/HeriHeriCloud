@@ -69,15 +69,29 @@ export default function Settings({ isMobile, AppLogo, AppAuth }: any) {
     await invoke("vfs_update_blacklist", { blacklist: settings.uploadBlacklist }).catch(console.error);
 
     // Push WebDAV settings to Rust
-    await invoke("set_webdav_config", { 
-      port: Number(settings.webdavPort), 
-      username: settings.webdavUser, 
-      password: settings.webdavPass 
-    }).catch(console.error);
+    let activeWebdavPort = Number(settings.webdavPort);
+    if (settings.enableWebDAV) {
+      activeWebdavPort = await invoke<number>("boot_webdav_server", {
+        port: Number(settings.webdavPort),
+        username: settings.webdavUser,
+        password: settings.webdavPass,
+      }).catch((error) => {
+        console.error(error);
+        return Number(settings.webdavPort);
+      });
+    } else {
+      await invoke("set_webdav_config", {
+        port: Number(settings.webdavPort),
+        username: settings.webdavUser,
+        password: settings.webdavPass,
+      }).catch(console.error);
+    }
 
     setAlertData({
       title: t("Configuration Saved!"),
-      msg: t("Your changes have been saved. Please restart the app if you updated the WebDAV Port to apply network socket modifications.")
+      msg: activeWebdavPort === Number(settings.webdavPort)
+        ? t("Your changes have been saved.")
+        : t("Your changes have been saved. Restart the app to switch the WebDAV listener to the new port.")
     });
   };
 

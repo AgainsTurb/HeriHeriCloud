@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { isGStreamerMedia, openGStreamerMedia } from "../Services/gstreamerPlayer";
 import { QRCodeCanvas } from "qrcode.react";
 import { useTranslation } from "react-i18next";
 import { getFileIcon } from "../Utils/fileIcons";
@@ -454,6 +455,15 @@ export default function Home({ status }: { status: string }) {
     const textExts = ['txt', 'json', 'md', 'csv', 'py', 'js', 'ts', 'jsx', 'tsx', 'c', 'cpp', 'h', 'rs', 'log', 'xml'];
     const docExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
 
+    if (isGStreamerMedia(node.name)) {
+      try {
+        await openGStreamerMedia(node);
+      } catch (error) {
+        showAlert(t("Playback Error"), String(error));
+      }
+      return;
+    }
+
     let routePath = "";
     let wHeight = 480;
 
@@ -475,9 +485,16 @@ export default function Home({ status }: { status: string }) {
       return;
     }
 
-    const streamUrl = encodeURIComponent(`http://127.0.0.1:8888/stream/${node.id}`);
+    let configuredPort = 8888;
+    try {
+      const config = JSON.parse(localStorage.getItem("heriheri_config") || "{}");
+      configuredPort = Number(config.webdavPort) || 8888;
+    } catch {
+      // Retain the default for malformed legacy configuration.
+    }
+    const streamUrl = encodeURIComponent(`http://127.0.0.1:${configuredPort}/stream/${node.id}`);
     const title = encodeURIComponent(node.name);
-    const isAudio = routePath === "player" && wHeight === 800;
+    const isAudio = routePath === "player" && wHeight === 200;
 
     // Direct the new window to the correct HashRoute
     const routeUrl = `index.html#/${routePath}?url=${streamUrl}&title=${title}&isAudio=${isAudio}`;

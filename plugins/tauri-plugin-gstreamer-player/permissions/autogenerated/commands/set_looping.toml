@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-looping"
+description = "Enables the set_looping command without any pre-configured scope."
+commands.allow = ["set_looping"]
+
+[[permission]]
+identifier = "deny-set-looping"
+description = "Denies the set_looping command without any pre-configured scope."
+commands.deny = ["set_looping"]

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { isGStreamerMedia, openGStreamerMedia } from "../Services/gstreamerPlayer";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
@@ -1335,6 +1336,14 @@ export default function ConceptDesktop({ status }: { status: string }) {
     const images = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"];
     const text = ["txt", "json", "md", "csv", "py", "js", "ts", "jsx", "tsx", "c", "cpp", "h", "rs", "log", "xml"];
     const documents = ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
+    if (isGStreamerMedia(node.name)) {
+      try {
+        await openGStreamerMedia(node);
+      } catch (reason) {
+        setNotice({ title: t("Playback Error"), message: String(reason) });
+      }
+      return;
+    }
     let route = "";
     if (media.includes(ext)) route = "player";
     else if (images.includes(ext)) route = "image";

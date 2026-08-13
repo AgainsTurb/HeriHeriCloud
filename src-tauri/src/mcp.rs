@@ -395,4 +395,4 @@ async fn tool_agent_download(args: Value, app: AppHandle) -> Result<Value, JsonR
 
 fn mcp_text_result(text: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": text }] })
-}
+}

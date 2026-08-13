@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "node scripts/build-platform.mjs",
     "preview": "vite preview",
-    "tauri": "tauri",
+    "tauri": "node scripts/tauri.mjs",
+    "tauri:gstreamer": "node scripts/tauri.mjs",
+    "setup:gstreamer:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-gstreamer-windows.ps1",
     "scan-i18n": "i18next \"src/**/*.{ts,tsx}\" --config i18next-parser.config.cjs",
     "version": "node sync-version.cjs"
   },
