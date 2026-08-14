@@ -1,12 +1,16 @@
 param(
-    [string]$Version = "1.28.6"
+    [Parameter(Mandatory = $true)]
+    [string]$Version,
+
+    [ValidateSet("x86_64", "arm64", "x86")]
+    [string]$Architecture = "x86_64"
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $cacheDirectory = Join-Path $projectRoot ".gstreamer\cache"
-$installDirectory = Join-Path $projectRoot ".gstreamer\1.0\msvc_x86_64"
-$installerName = "gstreamer-1.0-msvc-x86_64-$Version.exe"
+$installDirectory = Join-Path $projectRoot ".gstreamer\1.0\msvc_$Architecture"
+$installerName = "gstreamer-1.0-msvc-$Architecture-$Version.exe"
 $installerPath = Join-Path $cacheDirectory $installerName
 $baseUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/$Version/msvc"
 
@@ -44,5 +48,5 @@ if (-not (Test-Path -LiteralPath $gstLaunch)) {
     throw "GStreamer installation completed without the expected gst-launch-1.0 executable."
 }
 
-Write-Host "GStreamer $Version is ready at $installDirectory"
+Write-Host "GStreamer $Version for Windows $Architecture is ready at $installDirectory"
 Write-Host "Use 'npm run tauri:gstreamer -- dev' so Cargo can locate the SDK."

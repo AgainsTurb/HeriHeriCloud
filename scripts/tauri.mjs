@@ -1,10 +1,11 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tauriCli = resolve(projectRoot, "node_modules", "@tauri-apps", "cli", "tauri.js");
+const setupScript = resolve(projectRoot, "scripts", "setup-gstreamer.mjs");
 const args = process.argv.slice(2);
 const targetDescription = [
   ...args,
@@ -13,7 +14,8 @@ const targetDescription = [
   process.env.TARGET,
   process.env.CARGO_BUILD_TARGET,
 ].filter(Boolean).join(" ");
-const isMobileTarget = /android|androideabi|ios|iphoneos|iphonesimulator/i.test(targetDescription);
+const isAndroidTarget = /android|androideabi/i.test(targetDescription);
+const isIOSTarget = /\bios\b|iphoneos|iphonesimulator/i.test(targetDescription);
 
 function environmentValue(environment, name) {
   const key = Object.keys(environment).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
@@ -27,6 +29,21 @@ function setWindowsEnvironmentValue(environment, name, value) {
   environment[name] = value;
 }
 
+function runSetup(platform, extraArguments = []) {
+  const result = spawnSync(process.execPath, [setupScript, "--platform", platform, ...extraArguments], {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: "inherit",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Automatic GStreamer setup for ${platform} failed with code ${result.status}`);
+}
+
+function commandSucceeds(command, commandArguments) {
+  const result = spawnSync(command, commandArguments, { cwd: projectRoot, env: process.env, stdio: "ignore" });
+  return !result.error && result.status === 0;
+}
+
 function validWindowsRoot(root) {
   return Boolean(root) &&
     existsSync(join(root, "bin", "gstreamer-1.0-0.dll")) &&
@@ -34,40 +51,49 @@ function validWindowsRoot(root) {
     existsSync(join(root, "libexec", "gstreamer-1.0", "gst-plugin-scanner.exe"));
 }
 
-function windowsGStreamerRoot(environment) {
-  const configured = environmentValue(environment, "GSTREAMER_1_0_ROOT_MSVC_X86_64");
-  const local = resolve(projectRoot, ".gstreamer", "1.0", "msvc_x86_64");
-  const x86Root = environmentValue(environment, "GSTREAMER_1_0_ROOT_MSVC_X86");
-  const sibling = x86Root ? resolve(x86Root, "..", "msvc_x86_64") : undefined;
+function windowsArchitecture() {
+  if (/aarch64|arm64/i.test(targetDescription) || process.arch === "arm64") return "arm64";
+  if (/i686|ia32/i.test(targetDescription) || process.arch === "ia32") return "x86";
+  return "x86_64";
+}
+
+function windowsEnvironmentVariable(architecture) {
+  return `GSTREAMER_1_0_ROOT_MSVC_${architecture.toUpperCase()}`;
+}
+
+function windowsGStreamerRoot(environment, architecture) {
+  const configured = environmentValue(environment, windowsEnvironmentVariable(architecture));
+  const local = resolve(projectRoot, ".gstreamer", "1.0", `msvc_${architecture}`);
   const pathRoots = (environmentValue(environment, "Path") || "")
     .split(delimiter)
-    .filter((entry) => /msvc_x86_64[\\/]bin[\\/]?$/i.test(entry))
+    .filter((entry) => new RegExp(`msvc_${architecture}[\\\\/]bin[\\\\/]?$`, "i").test(entry))
     .map((entry) => resolve(entry, ".."));
   const conventional = [
-    "C:\\gstreamer\\1.0\\msvc_x86_64",
-    join(process.env.ProgramFiles || "C:\\Program Files", "gstreamer", "1.0", "msvc_x86_64"),
+    `C:\\gstreamer\\1.0\\msvc_${architecture}`,
+    join(process.env.ProgramFiles || "C:\\Program Files", "gstreamer", "1.0", `msvc_${architecture}`),
+    join(process.env.LOCALAPPDATA || "", "Programs", "gstreamer", "1.0", `msvc_${architecture}`),
   ];
-
-  return [local, configured, sibling, ...pathRoots, ...conventional].find(validWindowsRoot);
+  return [local, configured, ...pathRoots, ...conventional].find(validWindowsRoot);
 }
 
 function configureWindowsGStreamer(environment) {
-  const root = windowsGStreamerRoot(environment);
+  const architecture = windowsArchitecture();
+  let root = windowsGStreamerRoot(environment, architecture);
   if (!root) {
-    throw new Error(
-      "64-bit GStreamer was not found. Run 'npm run setup:gstreamer:windows' or set " +
-      "GSTREAMER_1_0_ROOT_MSVC_X86_64 before starting the desktop app.",
-    );
+    console.log(`[HeriHeriCloud] GStreamer for Windows ${architecture} was not found; fetching the latest stable SDK.`);
+    runSetup("windows", ["--arch", architecture]);
+    root = windowsGStreamerRoot(environment, architecture);
   }
+  if (!root) throw new Error(`GStreamer setup completed, but the Windows ${architecture} SDK could not be located`);
 
   const bin = join(root, "bin");
   const plugins = join(root, "lib", "gstreamer-1.0");
   const scanner = join(root, "libexec", "gstreamer-1.0", "gst-plugin-scanner.exe");
   const cleanPath = (environmentValue(environment, "Path") || "")
     .split(delimiter)
-    .filter((entry) => entry && !/[\\/]gstreamer[\\/]1\.0[\\/](?:msvc_)?x86[\\/]bin[\\/]?$/i.test(entry));
+    .filter((entry) => entry && !/[\\/]gstreamer[\\/]1\.0[\\/](?:msvc_)?(?:x86|x86_64|arm64)[\\/]bin[\\/]?$/i.test(entry));
 
-  setWindowsEnvironmentValue(environment, "GSTREAMER_1_0_ROOT_MSVC_X86_64", root);
+  setWindowsEnvironmentValue(environment, windowsEnvironmentVariable(architecture), root);
   setWindowsEnvironmentValue(environment, "GST_PLUGIN_PATH", plugins);
   setWindowsEnvironmentValue(environment, "GST_PLUGIN_SYSTEM_PATH_1_0", plugins);
   setWindowsEnvironmentValue(environment, "GST_PLUGIN_SCANNER_1_0", scanner);
@@ -76,14 +102,75 @@ function configureWindowsGStreamer(environment) {
     join(root, "share", "pkgconfig"),
     environmentValue(environment, "PKG_CONFIG_PATH"),
   ].filter(Boolean).join(delimiter));
-  // Windows treats names case-insensitively, but Node can receive both Path and PATH.
-  // Passing both to CreateProcess is ambiguous and previously hid cargo.exe on some shells.
+  // Node can inherit both Path and PATH on Windows. Normalize them so CreateProcess does not
+  // choose an environment entry that accidentally hides cargo.exe.
   setWindowsEnvironmentValue(environment, "Path", [bin, ...cleanPath].join(delimiter));
-  console.log(`[HeriHeriCloud] Using 64-bit GStreamer from ${root}`);
+  console.log(`[HeriHeriCloud] Using GStreamer for Windows ${architecture} from ${root}`);
+}
+
+function configureLinuxGStreamer(environment) {
+  if (!commandSucceeds("pkg-config", ["--exists", "gstreamer-1.0", "gstreamer-video-1.0"]) ||
+      !commandSucceeds("gst-inspect-1.0", ["playbin"]) || !commandSucceeds("gst-inspect-1.0", ["avdec_h265"])) {
+    console.log("[HeriHeriCloud] The Linux GStreamer development SDK or HEVC decoder is missing; installing distribution packages.");
+    runSetup("linux");
+  }
+  if (!commandSucceeds("pkg-config", ["--exists", "gstreamer-1.0", "gstreamer-video-1.0"]) ||
+      !commandSucceeds("gst-inspect-1.0", ["playbin"]) || !commandSucceeds("gst-inspect-1.0", ["avdec_h265"])) {
+    throw new Error("Linux GStreamer setup finished without the development SDK, playbin, or avdec_h265. Your distribution may require an additional multimedia repository for gst-libav.");
+  }
+  environment.PKG_CONFIG_PATH = environmentValue(environment, "PKG_CONFIG_PATH") || "";
+  console.log("[HeriHeriCloud] Using the system GStreamer installation");
+}
+
+function configureMacOSGStreamer(environment) {
+  const framework = "/Library/Frameworks/GStreamer.framework/Versions/1.0";
+  const pkgConfig = join(framework, "lib", "pkgconfig");
+  if (!existsSync(join(pkgConfig, "gstreamer-1.0.pc")) &&
+      !commandSucceeds("pkg-config", ["--exists", "gstreamer-1.0", "gstreamer-video-1.0"])) {
+    console.log("[HeriHeriCloud] GStreamer for macOS was not found; fetching the latest stable runtime and development packages.");
+    runSetup("macos");
+  }
+  if (existsSync(join(pkgConfig, "gstreamer-1.0.pc"))) {
+    environment.PKG_CONFIG_PATH = [pkgConfig, environmentValue(environment, "PKG_CONFIG_PATH")].filter(Boolean).join(delimiter);
+    environment.PATH = [join(framework, "bin"), environmentValue(environment, "PATH")].filter(Boolean).join(delimiter);
+  }
+  console.log("[HeriHeriCloud] GStreamer for macOS is ready");
+}
+
+function validAndroidRoot(root) {
+  return Boolean(root) && existsSync(join(root, "share", "gst-android", "ndk-build", "gstreamer-1.0.mk"));
+}
+
+function configureAndroidGStreamer(environment) {
+  let root = environmentValue(environment, "GSTREAMER_ROOT_ANDROID");
+  const pointer = resolve(projectRoot, ".gstreamer", "android", "current-root.txt");
+  if (!validAndroidRoot(root) && existsSync(pointer)) root = readFileSync(pointer, "utf8").trim();
+  if (!validAndroidRoot(root)) {
+    console.log("[HeriHeriCloud] Android GStreamer SDK was not found; fetching the latest stable universal SDK (large download).");
+    runSetup("android");
+    if (existsSync(pointer)) root = readFileSync(pointer, "utf8").trim();
+  }
+  if (!validAndroidRoot(root)) throw new Error("Android GStreamer setup completed, but GSTREAMER_ROOT_ANDROID is invalid");
+  environment.GSTREAMER_ROOT_ANDROID = root;
+  environment.HERI_GSTREAMER_ANDROID_ROOT = root;
+  console.log(`[HeriHeriCloud] Using Android GStreamer from ${root}`);
+}
+
+function configureIOSGStreamer() {
+  const framework = resolve(projectRoot, "plugins", "tauri-plugin-gstreamer-player", "ios", "Frameworks", "GStreamer.xcframework", "Info.plist");
+  if (!existsSync(framework)) {
+    console.log("[HeriHeriCloud] iOS GStreamer XCFramework was not found; fetching the latest stable XCFramework.");
+    runSetup("ios");
+  }
+  if (!existsSync(framework)) throw new Error("iOS GStreamer setup completed, but GStreamer.xcframework is missing");
 }
 
 const environment = { ...process.env };
-if (process.platform === "win32" && !isMobileTarget) configureWindowsGStreamer(environment);
+if (isAndroidTarget) configureAndroidGStreamer(environment);
+else if (isIOSTarget) configureIOSGStreamer();
+else if (process.platform === "win32") configureWindowsGStreamer(environment);
+else if (process.platform === "darwin") configureMacOSGStreamer(environment);
+else if (process.platform === "linux") configureLinuxGStreamer(environment);
 
 const result = spawnSync(process.execPath, [tauriCli, ...args], {
   cwd: projectRoot,

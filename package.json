@@ -9,7 +9,12 @@
     "preview": "vite preview",
     "tauri": "node scripts/tauri.mjs",
     "tauri:gstreamer": "node scripts/tauri.mjs",
-    "setup:gstreamer:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-gstreamer-windows.ps1",
+    "setup:gstreamer": "node scripts/setup-gstreamer.mjs",
+    "setup:gstreamer:windows": "node scripts/setup-gstreamer.mjs --platform windows",
+    "setup:gstreamer:linux": "node scripts/setup-gstreamer.mjs --platform linux",
+    "setup:gstreamer:macos": "node scripts/setup-gstreamer.mjs --platform macos",
+    "setup:gstreamer:android": "node scripts/setup-gstreamer.mjs --platform android",
+    "setup:gstreamer:ios": "node scripts/setup-gstreamer.mjs --platform ios",
     "scan-i18n": "i18next \"src/**/*.{ts,tsx}\" --config i18next-parser.config.cjs",
     "version": "node sync-version.cjs"
   },
