@@ -86,6 +86,115 @@ fn chunk_index_from_name(name: &str) -> Option<u32> {
         .and_then(|captures| captures[1].parse::<u32>().ok())
 }
 
+fn chunk_file_name(file: &serde_json::Value) -> &str {
+    file.get("name_all")
+        .and_then(|name| name.as_str())
+        .or_else(|| file.get("name").and_then(|name| name.as_str()))
+        .unwrap_or("")
+}
+
+/// Orders a Lanzou folder without weakening the normal encrypted-index validation. The filename
+/// key is local configuration, so another computer can legitimately be unable to decrypt names
+/// created by the first computer. Lanzou returns folder entries newest-first while HeriHeriCloud
+/// uploads chunks sequentially; the shorter tail chunk additionally tells us the orientation when
+/// the file size is not an exact multiple of CHUNK_SIZE.
+///
+/// Returns true when the listing-order compatibility path was required.
+fn order_cloud_chunks(
+    files: &mut [serde_json::Value],
+    expected_chunks: usize,
+    total_size: usize,
+) -> Result<bool, String> {
+    if files.len() != expected_chunks {
+        return Err(format!(
+            "cloud folder contains {} chunks; expected {expected_chunks}",
+            files.len()
+        ));
+    }
+
+    let parsed_indexes: Vec<Option<u32>> = files
+        .iter()
+        .map(|file| chunk_index_from_name(chunk_file_name(file)))
+        .collect();
+    let recognized = parsed_indexes
+        .iter()
+        .filter(|index| index.is_some())
+        .count();
+
+    if recognized == expected_chunks {
+        files.sort_by_key(|file| chunk_index_from_name(chunk_file_name(file)));
+        let ordered_indexes: Vec<u32> = files
+            .iter()
+            .filter_map(|file| chunk_index_from_name(chunk_file_name(file)))
+            .collect();
+        let expected_indexes: Vec<u32> = (1..=expected_chunks as u32).collect();
+        if ordered_indexes != expected_indexes {
+            return Err("cloud folder has missing or duplicate chunk indexes".to_string());
+        }
+        return Ok(false);
+    }
+
+    if recognized != 0 {
+        return Err("cloud folder mixes recognized and unrecognized chunk indexes".to_string());
+    }
+
+    // With no decryptable names, retain an already oldest-first response when its final entry is
+    // the expected short tail. Otherwise use Lanzou's normal newest-first ordering.
+    let tail_size =
+        total_size.saturating_sub(CHUNK_SIZE.saturating_mul(expected_chunks.saturating_sub(1)));
+    let first_size = files
+        .first()
+        .and_then(|file| file.get("size"))
+        .and_then(|size| size.as_str())
+        .map(parse_size_to_bytes)
+        .unwrap_or(0) as usize;
+    let last_size = files
+        .last()
+        .and_then(|file| file.get("size"))
+        .and_then(|size| size.as_str())
+        .map(parse_size_to_bytes)
+        .unwrap_or(0) as usize;
+    let already_oldest_first = tail_size < CHUNK_SIZE
+        && last_size > 0
+        && last_size < CHUNK_SIZE
+        && first_size >= CHUNK_SIZE;
+    if !already_oldest_first {
+        files.reverse();
+    }
+    Ok(true)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ChunkWindow {
+    index: usize,
+    local_start: usize,
+    local_end: usize,
+    length: usize,
+}
+
+fn next_chunk_window(
+    global_offset: usize,
+    remaining: usize,
+    chunk_count: usize,
+) -> Option<ChunkWindow> {
+    if remaining == 0 {
+        return None;
+    }
+    let index = global_offset / CHUNK_SIZE;
+    if index >= chunk_count {
+        return None;
+    }
+    let local_start = global_offset % CHUNK_SIZE;
+    let available = CHUNK_SIZE - local_start;
+    let length = remaining.min(available);
+    Some(ChunkWindow {
+        index,
+        local_start,
+        local_end: local_start + length - 1,
+        length,
+    })
+}
+
 async fn media_resolve_lock(vfs_id: u64) -> Arc<Mutex<()>> {
     let locks = MEDIA_RESOLVE_LOCKS
         .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
@@ -832,49 +941,28 @@ async fn handle_stream(
                         }
                     };
 
-                    let expected_chunks = chunks_str.parse::<usize>().map_err(|_| ()).ok();
-                    if expected_chunks.is_none() {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Invalid chunk count '{chunks_str}' for VFS node {vfs_id}"),
-                        )
-                            .into_response();
-                    }
-
-                    all_files.sort_by(|a, b| {
-                        let na = a
-                            .get("name_all")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or_else(|| {
-                                a.get("name").and_then(|n| n.as_str()).unwrap_or("")
-                            });
-                        let nb = b
-                            .get("name_all")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or_else(|| {
-                                b.get("name").and_then(|n| n.as_str()).unwrap_or("")
-                            });
-
-                        chunk_index_from_name(na).cmp(&chunk_index_from_name(nb))
-                    });
-
-                    let indexes: Option<Vec<u32>> = all_files
-                        .iter()
-                        .map(|file| {
-                            file.get("name_all")
-                                .and_then(|name| name.as_str())
-                                .or_else(|| file.get("name").and_then(|name| name.as_str()))
-                                .and_then(chunk_index_from_name)
-                        })
-                        .collect();
-                    let expected_indexes: Vec<u32> =
-                        (1..=expected_chunks.unwrap_or_default() as u32).collect();
-                    if indexes.as_deref() != Some(expected_indexes.as_slice()) {
-                        return (
-                            StatusCode::BAD_GATEWAY,
-                            format!("Cloud folder for VFS node {vfs_id} has missing, duplicate, or unrecognized chunk indexes"),
-                        )
-                            .into_response();
+                    let expected_chunks = match chunks_str.parse::<usize>() {
+                        Ok(count) if count > 1 => count,
+                        _ => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Invalid chunk count '{chunks_str}' for VFS node {vfs_id}"),
+                            )
+                                .into_response();
+                        }
+                    };
+                    match order_cloud_chunks(&mut all_files, expected_chunks, total_size) {
+                        Ok(true) => eprintln!(
+                            "[STREAM] VFS {vfs_id}: chunk-name key did not match; using validated Lanzou upload order"
+                        ),
+                        Ok(false) => {}
+                        Err(error) => {
+                            return (
+                                StatusCode::BAD_GATEWAY,
+                                format!("Cloud folder for VFS node {vfs_id} {error}"),
+                            )
+                                .into_response();
+                        }
                     }
 
                     let parsed_share_url = match reqwest::Url::parse(&share_url) {
@@ -904,13 +992,13 @@ async fn handle_stream(
                         }
                         urls.push(format!("{}/{}", base_file_url, id)); // Store Share URLs, not Direct URLs!
                     }
-                    if urls.len() != expected_chunks.unwrap_or_default() {
+                    if urls.len() != expected_chunks {
                         return (
                             StatusCode::BAD_GATEWAY,
                             format!(
                             "Cloud folder for VFS node {vfs_id} contains {} chunks; expected {}",
                             urls.len(),
-                            expected_chunks.unwrap_or_default()
+                            expected_chunks
                         ),
                         )
                             .into_response();
@@ -1097,16 +1185,17 @@ async fn handle_stream(
                 let mut pre_resolve_tasks: HashMap<usize, tokio::task::JoinHandle<Result<String, String>>> = HashMap::new();
 
                 while remaining_to_send > 0 {
-                    let chunk_idx = current_global_ptr / CHUNK_SIZE;
-                    if chunk_idx >= active_urls.len() {
-                        Err(std::io::Error::new(
+                    let chunk_window = next_chunk_window(
+                        current_global_ptr,
+                        remaining_to_send,
+                        active_urls.len(),
+                    ).ok_or_else(|| std::io::Error::new(
                             std::io::ErrorKind::UnexpectedEof,
-                            format!("Missing cloud chunk {}", chunk_idx + 1),
+                            format!("Missing cloud chunk {}", current_global_ptr / CHUNK_SIZE + 1),
                         ))?;
-                    }
-
-                    let chunk_local_start = current_global_ptr % CHUNK_SIZE;
-                    let chunk_local_end = std::cmp::min(CHUNK_SIZE - 1, chunk_local_start + remaining_to_send - 1);
+                    let chunk_idx = chunk_window.index;
+                    let chunk_local_start = chunk_window.local_start;
+                    let chunk_local_end = chunk_window.local_end;
                     let chunk_share_url = &active_urls[chunk_idx];
                     let mut retry = 0;
                     let mut direct_url = cached_direct_url(vfs_id, chunk_idx).await.unwrap_or_default();
@@ -1161,7 +1250,7 @@ async fn handle_stream(
                                 if resp.status().is_success() && honors_range && !ctype.contains("text/html") {
                                     let mut bytes = resp.bytes_stream();
                                     let mut delivered = 0usize;
-                                    let requested = chunk_local_end - chunk_local_start + 1;
+                                    let requested = chunk_window.length;
                                     let mut interrupted_before_data = false;
                                     loop {
                                         let packet = match tokio::time::timeout(UPSTREAM_PACKET_TIMEOUT, bytes.next()).await {
@@ -1279,7 +1368,11 @@ async fn handle_stream(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_byte_range, parse_size_to_bytes, select_lan_ipv4};
+    use super::{
+        next_chunk_window, order_cloud_chunks, parse_byte_range, parse_size_to_bytes,
+        select_lan_ipv4, ChunkWindow, CHUNK_SIZE,
+    };
+    use serde_json::json;
     use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
@@ -1309,6 +1402,85 @@ mod tests {
         assert_eq!(parse_size_to_bytes("123456"), 123456);
         assert_eq!(parse_size_to_bytes("1.5 MB"), 1_572_864);
         assert_eq!(parse_size_to_bytes("2GB"), 2_147_483_648);
+    }
+
+    #[test]
+    fn orders_chunks_by_decrypted_or_legacy_indexes_when_available() {
+        let mut files = vec![
+            json!({"id": "second", "name_all": "asset_part2.iso", "size": CHUNK_SIZE.to_string()}),
+            json!({"id": "first", "name_all": "asset_part1.iso", "size": CHUNK_SIZE.to_string()}),
+        ];
+
+        assert_eq!(order_cloud_chunks(&mut files, 2, CHUNK_SIZE * 2), Ok(false));
+        assert_eq!(files[0]["id"], "first");
+        assert_eq!(files[1]["id"], "second");
+    }
+
+    #[test]
+    fn recovers_newest_first_chunks_when_filename_key_differs() {
+        let tail_size = CHUNK_SIZE / 2;
+        let mut files = vec![
+            json!({"id": "third", "name_all": "opaque-third.zip", "size": tail_size.to_string()}),
+            json!({"id": "second", "name_all": "opaque-second.zip", "size": CHUNK_SIZE.to_string()}),
+            json!({"id": "first", "name_all": "opaque-first.zip", "size": CHUNK_SIZE.to_string()}),
+        ];
+
+        assert_eq!(
+            order_cloud_chunks(&mut files, 3, CHUNK_SIZE * 2 + tail_size),
+            Ok(true)
+        );
+        assert_eq!(files[0]["id"], "first");
+        assert_eq!(files[1]["id"], "second");
+        assert_eq!(files[2]["id"], "third");
+    }
+
+    #[test]
+    fn retains_oldest_first_fallback_when_short_tail_already_comes_last() {
+        let tail_size = CHUNK_SIZE / 2;
+        let mut files = vec![
+            json!({"id": "first", "name_all": "opaque-first.zip", "size": CHUNK_SIZE.to_string()}),
+            json!({"id": "second", "name_all": "opaque-second.zip", "size": CHUNK_SIZE.to_string()}),
+            json!({"id": "third", "name_all": "opaque-third.zip", "size": tail_size.to_string()}),
+        ];
+
+        assert_eq!(
+            order_cloud_chunks(&mut files, 3, CHUNK_SIZE * 2 + tail_size),
+            Ok(true)
+        );
+        assert_eq!(files[0]["id"], "first");
+        assert_eq!(files[2]["id"], "third");
+    }
+
+    #[test]
+    fn maps_seek_ranges_across_cloud_chunk_boundaries() {
+        assert_eq!(
+            next_chunk_window(CHUNK_SIZE - 10, 20, 2),
+            Some(ChunkWindow {
+                index: 0,
+                local_start: CHUNK_SIZE - 10,
+                local_end: CHUNK_SIZE - 1,
+                length: 10,
+            })
+        );
+        assert_eq!(
+            next_chunk_window(CHUNK_SIZE, 10, 2),
+            Some(ChunkWindow {
+                index: 1,
+                local_start: 0,
+                local_end: 9,
+                length: 10,
+            })
+        );
+        assert_eq!(
+            next_chunk_window(CHUNK_SIZE + 123, 50, 2),
+            Some(ChunkWindow {
+                index: 1,
+                local_start: 123,
+                local_end: 172,
+                length: 50,
+            })
+        );
+        assert_eq!(next_chunk_window(CHUNK_SIZE * 2, 1, 2), None);
     }
 
     #[test]

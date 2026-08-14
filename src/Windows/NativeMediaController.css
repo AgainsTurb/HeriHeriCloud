@@ -236,6 +236,18 @@ body:has(.native-player-stage),
 
 .native-player-center-play .native-player-glyph { width: 22px; height: 22px; }
 
+/* Avoid alpha-fringe rings when WebKit composites the paused control over a separate NSWindow. */
+.platform-macos .native-player-center-play {
+  border: 0 !important;
+  box-shadow: none;
+}
+
+.platform-macos button:focus { outline: none; }
+.platform-macos button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, .72);
+  outline-offset: 2px;
+}
+
 .native-player-options {
   position: absolute;
   right: clamp(12px, 3.5vw, 44px);

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { platform } from "@tauri-apps/plugin-os";
 import { useTranslation } from "react-i18next";
 import {
   getNativePlayerState,
@@ -78,11 +79,13 @@ export default function NativeMediaController() {
   const [error, setError] = useState("");
   const [startupMessage, setStartupMessage] = useState("");
   const hideTimer = useRef<number | null>(null);
+  const seekDraftRef = useRef<number | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
   // getCurrentWindow() constructs a new JavaScript handle. Keep one stable instance so polling
   // renders do not repeatedly tear down and re-register move, resize, and startup listeners.
   const playerWindow = useMemo(() => getCurrentWindow(), []);
+  const isMacOS = useMemo(() => platform() === "macos", []);
 
   const refresh = useCallback(async () => {
     try {
@@ -307,12 +310,31 @@ export default function NativeMediaController() {
   const selectedSubtitle = state.subtitleTracks.find((track) => track.selected)?.index ?? -1;
   const isPlaying = state.status === "playing" || state.status === "buffering";
 
-  const commitSeek = () => {
-    if (seekDraft == null) return;
-    const target = seekDraft;
+  const updateSeekDraft = useCallback((target: number) => {
+    seekDraftRef.current = target;
+    setSeekDraft(target);
+  }, []);
+
+  const commitSeek = useCallback((elementValue?: number) => {
+    const target = elementValue ?? seekDraftRef.current;
+    if (target == null || !Number.isFinite(target)) return;
+    seekDraftRef.current = null;
     setSeekDraft(null);
     void run(() => nativePlayerSeek(target));
-  };
+  }, [run]);
+
+  useEffect(() => {
+    // WKWebView can keep pointer capture inside the native range control and omit its element-level
+    // pointerup. The ref is cleared by the first successful commit, so this bubbling/window fallback
+    // is idempotent on Chromium and WebKit alike.
+    const finishPendingSeek = () => commitSeek();
+    window.addEventListener("pointerup", finishPendingSeek);
+    window.addEventListener("pointercancel", finishPendingSeek);
+    return () => {
+      window.removeEventListener("pointerup", finishPendingSeek);
+      window.removeEventListener("pointercancel", finishPendingSeek);
+    };
+  }, [commitSeek]);
 
   const toggleFullscreen = async () => {
     await playerWindow.setFullscreen(!(await playerWindow.isFullscreen()));
@@ -320,7 +342,7 @@ export default function NativeMediaController() {
 
   return (
     <main
-      className={`native-player-stage ${controlsVisible || optionsOpen ? "controls-visible" : "controls-hidden"}`}
+      className={`native-player-stage ${isMacOS ? "platform-macos" : ""} ${controlsVisible || optionsOpen ? "controls-visible" : "controls-hidden"}`}
       tabIndex={-1}
       onPointerMove={revealControls}
       onPointerLeave={hideControlsSoon}
@@ -408,9 +430,12 @@ export default function NativeMediaController() {
             max={Math.max(duration, 1)}
             value={displayedPosition}
             disabled={!duration}
-            onChange={(event) => setSeekDraft(Number(event.target.value))}
-            onPointerUp={commitSeek}
-            onKeyUp={commitSeek}
+            onInput={(event) => updateSeekDraft(Number(event.currentTarget.value))}
+            onChange={(event) => updateSeekDraft(Number(event.currentTarget.value))}
+            onPointerUp={(event) => commitSeek(Number(event.currentTarget.value))}
+            onPointerCancel={(event) => commitSeek(Number(event.currentTarget.value))}
+            onKeyUp={(event) => commitSeek(Number(event.currentTarget.value))}
+            onBlur={() => commitSeek()}
           />
           <span>{formatTime(state.durationMs)}</span>
         </div>
