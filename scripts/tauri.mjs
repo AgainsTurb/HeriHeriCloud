@@ -54,8 +54,17 @@ function validWindowsRoot(root) {
 }
 
 function windowsArchitecture() {
-  if (/aarch64|arm64/i.test(targetDescription) || process.arch === "arm64") return "arm64";
-  if (/i686|ia32/i.test(targetDescription) || process.arch === "ia32") return "x86";
+  if (/aarch64|arm64/i.test(targetDescription)) return "arm64";
+  if (/i686|ia32/i.test(targetDescription)) return "x86";
+  if (/x86_64/i.test(targetDescription)) return "x86_64";
+  if (process.arch === "arm64") return "arm64";
+  if (process.arch === "ia32") return "x86";
+  return "x86_64";
+}
+
+function windowsHostArchitecture() {
+  if (process.arch === "arm64") return "arm64";
+  if (process.arch === "ia32") return "x86";
   return "x86_64";
 }
 
@@ -104,6 +113,9 @@ function configureWindowsGStreamer(environment) {
     join(root, "share", "pkgconfig"),
     environmentValue(environment, "PKG_CONFIG_PATH"),
   ].filter(Boolean).join(delimiter));
+  if (architecture !== windowsHostArchitecture()) {
+    setWindowsEnvironmentValue(environment, "PKG_CONFIG_ALLOW_CROSS", "1");
+  }
   // Node can inherit both Path and PATH on Windows. Normalize them so CreateProcess does not
   // choose an environment entry that accidentally hides cargo.exe.
   setWindowsEnvironmentValue(environment, "Path", [bin, ...cleanPath].join(delimiter));
