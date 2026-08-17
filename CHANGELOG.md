@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.5.1] – 2026-08-17
+
+### 新增
+- 无。
+
+### 变更
+- 适应蓝奏云新的下载api接口。
+
+### 修复
+- 无。
+
+### Added
+- None.
+
+### Changed
+- Adapting to Lanzou Cloud's new download API interface.
+
+### Fixed
+- None.
+
+---
+
+---
+
 ## [1.5.0] – 2026-08-12
 
 ### 新增
