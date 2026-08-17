@@ -5,6 +5,7 @@ import android.app.Dialog
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -18,6 +19,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.ArrayAdapter
@@ -38,6 +40,7 @@ import org.json.JSONArray
     var title: String = "Media Player"
     var isAudio: Boolean = false
     var startPositionMs: Long? = null
+    var expectedGeneration: Long? = null
     var processor: ProcessorRequest = ProcessorRequest()
 }
 @InvokeArg class OpenInvokeArgs { var request: OpenRequest = OpenRequest() }
@@ -46,8 +49,27 @@ import org.json.JSONArray
 @InvokeArg class MutedRequest { var muted: Boolean = false }
 @InvokeArg class RateRequest { var rate: Double = 1.0 }
 @InvokeArg class LoopingRequest { var looping: Boolean = false }
+@InvokeArg class StopRequest { var expectedGeneration: Long? = null }
 @InvokeArg class TrackRequest { var index: Int = -1 }
 @InvokeArg class SubtitleUriRequest { var uri: String? = null }
+
+@android.annotation.TargetApi(Build.VERSION_CODES.TIRAMISU)
+private object Api33BackHandler {
+    fun register(dialog: Dialog, action: () -> Unit): Any {
+        val callback = android.window.OnBackInvokedCallback { action() }
+        dialog.onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            callback,
+        )
+        return callback
+    }
+
+    fun unregister(dialog: Dialog, callback: Any) {
+        dialog.onBackInvokedDispatcher.unregisterOnBackInvokedCallback(
+            callback as android.window.OnBackInvokedCallback,
+        )
+    }
+}
 
 @TauriPlugin
 class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), SurfaceHolder.Callback {
@@ -55,6 +77,9 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
     private var surfaceView: SurfaceView? = null
     private var pendingRequest: OpenRequest? = null
     private var seekBar: SeekBar? = null
+    private var loadingIndicator: ProgressBar? = null
+    private var controlsView: View? = null
+    private var backInvokedCallback: Any? = null
     private val handler = Handler(Looper.getMainLooper())
     private var generation = 0L
     private var volume = 1.0
@@ -110,32 +135,92 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
 
     @Command fun open(invoke: Invoke) {
         val request = invoke.parseArgs(OpenInvokeArgs::class.java).request
-        if (request.uri.isBlank()) return invoke.reject("A media URI is required")
         if (request.processor.kind != "passthrough") return invoke.reject("No ONNX frame processor is installed")
         activity.runOnUiThread {
+            if (request.uri.isBlank()) {
+                closePlayer()
+                pendingRequest = request
+                generation += 1
+                status = "preparing"
+                showPlayer(request)
+                invoke.resolve(openResponse(opened = false))
+                return@runOnUiThread
+            }
+
+            request.expectedGeneration?.let { expected ->
+                if (dialog == null || generation != expected || pendingRequest?.uri?.isNotBlank() == true) {
+                    invoke.resolve(openResponse(opened = false))
+                    return@runOnUiThread
+                }
+            }
             ensureNativeRuntime()?.let { message ->
                 invoke.reject("Unable to initialize native GStreamer: $message")
                 return@runOnUiThread
             }
+
+            if (request.expectedGeneration != null) {
+                pendingRequest = request
+                val surface = surfaceView?.holder?.surface
+                if (surface != null && surface.isValid && !startPlayback(request, surface)) {
+                    invoke.reject("Unable to start native GStreamer playback")
+                    return@runOnUiThread
+                }
+                invoke.resolve(openResponse(opened = true))
+                return@runOnUiThread
+            }
+
             closePlayer()
             pendingRequest = request
             generation += 1
             showPlayer(request)
-            invoke.resolve(JSObject().apply {
-                put("generation", generation)
-                put("rendererMode", "native-surface")
-            })
+            invoke.resolve(openResponse(opened = true))
         }
     }
 
+    private fun openResponse(opened: Boolean) = JSObject().apply {
+        put("generation", generation)
+        put("rendererMode", "native-surface")
+        put("opened", opened)
+    }
+
+    private fun startPlayback(request: OpenRequest, surface: Surface): Boolean {
+        if (!nativeRuntimeReady || request.uri.isBlank()) return false
+        if (!nativeOpen(request.uri, surface)) {
+            status = "stopped"
+            return false
+        }
+        status = "playing"
+        loadingIndicator?.visibility = View.GONE
+        controlsView?.visibility = View.VISIBLE
+        nativeSetVolume(volume)
+        nativeSetMuted(muted)
+        nativeSetLooping(looping)
+        request.startPositionMs?.let { nativeSeek(it) }
+        revealChrome()
+        return true
+    }
+
     private fun showPlayer(request: OpenRequest) {
-        val playerDialog = Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        val playerDialog = object : Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen) {
+            @Deprecated("Android routes legacy back events here below API 33")
+            override fun onBackPressed() {
+                closePlayer()
+            }
+        }
         playerDialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        playerDialog.setCancelable(true)
+        playerDialog.setCanceledOnTouchOutside(false)
         playerDialog.window?.setBackgroundDrawable(ColorDrawable(Color.BLACK))
         val root = FrameLayout(activity)
         val video = SurfaceView(activity)
         video.holder.addCallback(this)
         root.addView(video, FrameLayout.LayoutParams(-1, -1))
+
+        val loading = ProgressBar(activity).apply {
+            isIndeterminate = true
+            visibility = if (request.uri.isBlank()) View.VISIBLE else View.GONE
+        }
+        root.addView(loading, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
 
         fun glassBackground(radius: Float = 28f) = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
@@ -175,6 +260,7 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
             background = glassBackground(38f)
             elevation = 20f
             setPadding(18, 8, 18, 12)
+            visibility = if (request.uri.isBlank()) View.INVISIBLE else View.VISIBLE
         }
         val timeline = SeekBar(activity).apply {
             max = 1000
@@ -251,8 +337,13 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
         playerDialog.setContentView(root)
         playerDialog.setOnDismissListener { finishPlayer() }
         surfaceView = video
+        loadingIndicator = loading
+        controlsView = bottom
         dialog = playerDialog
         playerDialog.show()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            backInvokedCallback = Api33BackHandler.register(playerDialog) { closePlayer() }
+        }
         handler.post(progressUpdater)
         revealChrome()
     }
@@ -265,9 +356,11 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
 
     private val progressUpdater = object : Runnable {
         override fun run() {
-            val duration = nativeDuration()
-            val position = nativePosition()
-            if (duration > 0 && position >= 0) seekBar?.progress = (position * 1000L / duration).toInt()
+            if (nativeRuntimeReady && pendingRequest?.uri?.isNotBlank() == true) {
+                val duration = nativeDuration()
+                val position = nativePosition()
+                if (duration > 0 && position >= 0) seekBar?.progress = (position * 1000L / duration).toInt()
+            }
             if (dialog != null) handler.postDelayed(this, 500)
         }
     }
@@ -275,11 +368,19 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
     private fun finishPlayer() {
         handler.removeCallbacks(progressUpdater)
         handler.removeCallbacks(hideChrome)
-        nativeStop()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            backInvokedCallback?.let { callback ->
+                dialog?.let { current -> Api33BackHandler.unregister(current, callback) }
+            }
+        }
+        backInvokedCallback = null
+        if (nativeRuntimeReady) nativeStop()
         surfaceView = null
         dialog = null
         pendingRequest = null
         seekBar = null
+        loadingIndicator = null
+        controlsView = null
         status = "stopped"
         rate = 1.0
         externalSubtitleUri = null
@@ -294,22 +395,28 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
+        if (surfaceView?.holder !== holder) return
         val request = pendingRequest ?: return
-        if (nativeOpen(request.uri, holder.surface)) {
-            status = "playing"
-            nativeSetVolume(volume)
-            nativeSetMuted(muted)
-            nativeSetLooping(looping)
-            request.startPositionMs?.let { nativeSeek(it) }
-            revealChrome()
-        } else status = "stopped"
+        if (request.uri.isNotBlank() && nativeRuntimeReady) startPlayback(request, holder.surface)
     }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
-    override fun surfaceDestroyed(holder: SurfaceHolder) { nativeStop() }
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        if (surfaceView?.holder === holder && nativeRuntimeReady) nativeStop()
+    }
 
     @Command fun play(invoke: Invoke) { nativePlay(); status = "playing"; invoke.resolve() }
     @Command fun pause(invoke: Invoke) { nativePause(); status = "paused"; invoke.resolve() }
-    @Command fun stop(invoke: Invoke) { activity.runOnUiThread { closePlayer() }; invoke.resolve() }
+    @Command fun stop(invoke: Invoke) {
+        val expectedGeneration = invoke.parseArgs(StopRequest::class.java).expectedGeneration
+        activity.runOnUiThread {
+            val closed = dialog != null && (expectedGeneration == null || expectedGeneration == generation)
+            if (closed) closePlayer()
+            invoke.resolve(JSObject().apply {
+                put("generation", generation)
+                put("closed", closed)
+            })
+        }
+    }
     @Command fun seek(invoke: Invoke) {
         val request = invoke.parseArgs(SeekRequest::class.java)
         if (nativeSeek(request.positionMs)) invoke.resolve() else invoke.reject("Seek failed")
@@ -357,14 +464,20 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
 
     @Command fun getState(invoke: Invoke) {
         invoke.resolve(JSObject().apply {
-            val currentStatus = if (dialog == null) "stopped" else if (nativeIsPlaying()) "playing" else "paused"
+            val hasNativePlayer = nativeRuntimeReady && pendingRequest?.uri?.isNotBlank() == true
+            val currentStatus = when {
+                dialog == null -> "stopped"
+                !hasNativePlayer -> "preparing"
+                nativeIsPlaying() -> "playing"
+                else -> "paused"
+            }
             put("generation", generation); put("status", currentStatus)
-            put("positionMs", nativePosition().takeIf { it >= 0 })
-            put("durationMs", nativeDuration().takeIf { it >= 0 })
+            put("positionMs", if (hasNativePlayer) nativePosition().takeIf { it >= 0 } else null)
+            put("durationMs", if (hasNativePlayer) nativeDuration().takeIf { it >= 0 } else null)
             put("volume", volume); put("muted", muted); put("rate", rate); put("looping", looping)
             put("bufferingPercent", null); put("title", pendingRequest?.title)
-            put("audioTracks", tracks(nativeAudioTrackCount(), nativeCurrentAudioTrack(), "Audio"))
-            put("subtitleTracks", tracks(nativeSubtitleTrackCount(), nativeCurrentSubtitleTrack(), "Subtitle"))
+            put("audioTracks", if (hasNativePlayer) tracks(nativeAudioTrackCount(), nativeCurrentAudioTrack(), "Audio") else JSONArray())
+            put("subtitleTracks", if (hasNativePlayer) tracks(nativeSubtitleTrackCount(), nativeCurrentSubtitleTrack(), "Subtitle") else JSONArray())
             put("externalSubtitleUri", externalSubtitleUri)
         })
     }

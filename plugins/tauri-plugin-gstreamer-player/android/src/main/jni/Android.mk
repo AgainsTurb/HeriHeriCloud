@@ -27,10 +27,10 @@ endif
 GSTREAMER_NDK_BUILD_PATH := $(GSTREAMER_ROOT)/share/gst-android/ndk-build
 include $(GSTREAMER_NDK_BUILD_PATH)/plugins.mk
 GSTREAMER_PLUGINS := coreelements app audioconvert audioresample gio overlaycomposition pango \
-    typefindfunctions videoconvertscale videorate volume autodetect playback \
+    typefindfunctions deinterlace videoconvertscale videorate volume autodetect playback \
     subparse ogg theora vorbis opus adaptivedemux2 audioparsers auparse avi flac flv \
     id3demux isomp4 jpeg matroska mpg123 wavparse dash hls opusparse videoparsersbad \
-    androidmedia mpegtsdemux libav tcp rtsp rtp rtpmanager soup udp opengl opensles
+    androidmedia asf mpegpsdemux mpegtsdemux libav tcp rtsp rtp rtpmanager soup udp opensles
 GSTREAMER_EXTRA_DEPS := gstreamer-video-1.0
 override GSTREAMER_BUILD_DIR := $(abspath $(LOCAL_PATH)/../../../build/gst-android-build/$(TARGET_ARCH_ABI))
 override GSTREAMER_JAVA_SRC_DIR := $(GSTREAMER_BUILD_DIR)/java

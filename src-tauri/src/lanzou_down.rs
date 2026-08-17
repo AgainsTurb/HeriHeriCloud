@@ -605,7 +605,7 @@ impl LanzouDownloader {
             post_data.insert("ls", "1".to_string());
             post_data.insert("pwd", password.unwrap_or("").to_string());
 
-            let filemore_url = parsed_url.join(&format!("/ajaxfile.php?file={}", fid)).unwrap().to_string();
+            let filemore_url = parsed_url.join(&format!("/filemoreajax.php?file={}", fid)).unwrap().to_string();
 
             let resp = self.client.post(&filemore_url).headers(get_ajax_headers(folder_url)).form(&post_data).send().await.map_err(|e| e.to_string())?;
 

@@ -7,9 +7,7 @@ import { platform } from "@tauri-apps/plugin-os";
 const COMMAND_PREFIX = "plugin:gstreamer-player|";
 const STARTUP_STATUS_KEY = "heriheri_native_player_startup";
 
-// Temporary cross-platform fallback. Set to true only when the native player
-// is ready to replace the WebView MediaPlayer on every supported platform.
-export const USE_NATIVE_MEDIA_PLAYER = false;
+export const USE_NATIVE_MEDIA_PLAYER = true;
 
 interface PlayerStartupStatus {
   nodeId: number;
@@ -90,6 +88,12 @@ export interface NativePlayerEvent {
 interface OpenResponse {
   generation: number;
   rendererMode: "embedded-native-surface" | "native-surface";
+  opened?: boolean;
+}
+
+interface StopResponse {
+  generation: number;
+  closed: boolean;
 }
 
 export const DESKTOP_PLAYER_LABEL = "gstreamer-media-player";
@@ -224,6 +228,7 @@ export async function openGStreamerMedia(
   const currentPlatform = platform();
   let desktopWindow: WebviewWindow | null = null;
   let videoHost: Window | null = null;
+  let preparedAndroidGeneration: number | null = null;
   try {
     // Create the desktop controller first so cloud/server startup is observable and the user can
     // cancel it. Previously the server command ran before this try block and before any window was
@@ -251,6 +256,17 @@ export async function openGStreamerMedia(
       await desktopWindow.show();
       await desktopWindow.setFocus();
     }
+    if (currentPlatform === "android") {
+      const prepared = await invoke<OpenResponse>(`${COMMAND_PREFIX}open`, {
+        request: {
+          uri: "",
+          title: node.name,
+          isAudio: /\.(mp3|wav|flac|m4a|aac|opus|wma|ogg)$/i.test(node.name),
+          processor,
+        },
+      });
+      preparedAndroidGeneration = prepared.generation;
+    }
     // Playback and WebDAV share the same Axum listener. Awaiting this command guarantees that the
     // socket is actually bound; it also reports bind failures instead of handing GStreamer a dead
     // loopback URL and waiting indefinitely for typefinding.
@@ -264,19 +280,33 @@ export async function openGStreamerMedia(
       return; // The user closed the controller while the cloud stream was being prepared.
     }
     publishStartupStatus({ nodeId: node.id, title: node.name, phase: "opening" });
-    await invoke<OpenResponse>(`${COMMAND_PREFIX}open`, {
+    const openResponse = await invoke<OpenResponse>(`${COMMAND_PREFIX}open`, {
       request: {
         uri,
         title: node.name,
         isAudio: /\.(mp3|wav|flac|m4a|aac|opus|wma|ogg)$/i.test(node.name),
         processor,
+        expectedGeneration: preparedAndroidGeneration ?? undefined,
         rendererWindowLabel: videoHost?.label,
         controllerWindowLabel: desktopWindow?.label,
       },
     });
+    if (currentPlatform === "android" && openResponse.opened === false) {
+      localStorage.removeItem(STARTUP_STATUS_KEY);
+      return; // The player was dismissed while the cloud stream was being prepared.
+    }
     publishStartupStatus({ nodeId: node.id, title: node.name, phase: "ready" });
 
   } catch (error) {
+    if (currentPlatform === "android" && preparedAndroidGeneration !== null) {
+      const stopped = await invoke<StopResponse>(`${COMMAND_PREFIX}stop`, {
+        expectedGeneration: preparedAndroidGeneration,
+      }).catch(() => null);
+      if (stopped && !stopped.closed) {
+        localStorage.removeItem(STARTUP_STATUS_KEY);
+        return; // This request was dismissed or replaced while its stream was resolving.
+      }
+    }
     publishStartupStatus({
       nodeId: node.id,
       title: node.name,

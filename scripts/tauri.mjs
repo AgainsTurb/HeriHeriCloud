@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { auditDesktopBundleSizes, prepareGStreamerBundle } from "./bundle-gstreamer-runtime.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tauriCli = resolve(projectRoot, "node_modules", "@tauri-apps", "cli", "tauri.js");
@@ -18,6 +19,7 @@ const targetDescription = [
 const isAndroidTarget = /android|androideabi/i.test(targetDescription);
 const isIOSTarget = /\bios\b|iphoneos|iphonesimulator/i.test(targetDescription);
 const isAppleCrossTarget = /universal-apple-darwin|(?:x86_64|aarch64)-apple-darwin/i.test(targetDescription);
+const isDesktopBundleBuild = args[0] === "build" && !isAndroidTarget && !isIOSTarget && !args.includes("--no-bundle");
 
 function environmentValue(environment, name) {
   const key = Object.keys(environment).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
@@ -120,6 +122,7 @@ function configureWindowsGStreamer(environment) {
   // choose an environment entry that accidentally hides cargo.exe.
   setWindowsEnvironmentValue(environment, "Path", [bin, ...cleanPath].join(delimiter));
   console.log(`[HeriHeriCloud] Using GStreamer for Windows ${architecture} from ${root}`);
+  return { root, architecture };
 }
 
 function configureLinuxGStreamer(environment) {
@@ -153,6 +156,7 @@ function configureMacOSGStreamer(environment) {
     if (isAppleCrossTarget) environment.PKG_CONFIG_ALLOW_CROSS = "1";
   }
   console.log("[HeriHeriCloud] GStreamer for macOS is ready");
+  return framework;
 }
 
 function validAndroidRoot(root) {
@@ -213,14 +217,37 @@ function configureIOSGStreamer() {
 }
 
 const environment = { ...process.env };
+let desktopBundleConfig = null;
 if (isAndroidTarget) {
   configureAndroidNdk(environment);
   configureAndroidGStreamer(environment);
 }
 else if (isIOSTarget) configureIOSGStreamer();
-else if (process.platform === "win32") configureWindowsGStreamer(environment);
-else if (process.platform === "darwin") configureMacOSGStreamer(environment);
-else if (process.platform === "linux") configureLinuxGStreamer(environment);
+else if (process.platform === "win32") {
+  const windows = configureWindowsGStreamer(environment);
+  if (isDesktopBundleBuild) {
+    desktopBundleConfig = await prepareGStreamerBundle({
+      projectRoot,
+      platform: "windows",
+      sdkRoot: windows.root,
+      architecture: windows.architecture,
+    });
+  }
+}
+else if (process.platform === "darwin") {
+  const framework = configureMacOSGStreamer(environment);
+  if (isDesktopBundleBuild) {
+    desktopBundleConfig = await prepareGStreamerBundle({ projectRoot, platform: "macos", sdkRoot: framework });
+  }
+}
+else if (process.platform === "linux") {
+  configureLinuxGStreamer(environment);
+  if (isDesktopBundleBuild) {
+    desktopBundleConfig = await prepareGStreamerBundle({ projectRoot, platform: "linux", environment });
+  }
+}
+
+if (desktopBundleConfig) args.push("--config", desktopBundleConfig);
 
 const result = spawnSync(process.execPath, [tauriCli, ...args], {
   cwd: projectRoot,
@@ -228,4 +255,7 @@ const result = spawnSync(process.execPath, [tauriCli, ...args], {
   stdio: "inherit",
 });
 if (result.error) throw result.error;
+if (result.status === 0 && isDesktopBundleBuild) {
+  await auditDesktopBundleSizes(projectRoot, environment.CARGO_TARGET_DIR);
+}
 process.exit(result.status ?? 1);

@@ -763,9 +763,39 @@ fn capabilities() -> PlayerCapabilities {
     }
 }
 
+fn configure_bundled_runtime<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(resources) = app.path().resource_dir() else {
+        return;
+    };
+    let plugins = resources.join("gstreamer-1.0");
+    if !plugins.is_dir() {
+        return;
+    }
+
+    std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins);
+    std::env::set_var("GST_PLUGIN_PATH_1_0", &plugins);
+
+    #[cfg(target_os = "windows")]
+    let scanner = resources.join("gst-plugin-scanner.exe");
+    #[cfg(target_os = "macos")]
+    let scanner = resources
+        .parent()
+        .map(|contents| contents.join("Helpers").join("gst-plugin-scanner"));
+
+    #[cfg(target_os = "windows")]
+    if scanner.is_file() {
+        std::env::set_var("GST_PLUGIN_SCANNER_1_0", scanner);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(scanner) = scanner.filter(|path| path.is_file()) {
+        std::env::set_var("GST_PLUGIN_SCANNER_1_0", scanner);
+    }
+}
+
 pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     Builder::new(PLUGIN_NAME)
         .setup(|app, _api| {
+            configure_bundled_runtime(app);
             app.manage(PlayerStore::default());
             Ok(())
         })

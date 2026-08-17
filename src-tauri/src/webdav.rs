@@ -13,20 +13,25 @@ use chacha20poly1305::{
 use futures_util::stream::BoxStream;
 use futures_util::StreamExt;
 use reqwest::Client;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::lanzou::{AppState, SharePayload};
 
-const CHUNK_SIZE: usize = 100 * 1024 * 1024;
+const CHUNK_SIZE: u64 = 100 * 1024 * 1024;
+const DIRECT_LINK_REFRESH_AFTER: Duration = Duration::from_secs(150);
 const DIRECT_LINK_TTL: Duration = Duration::from_secs(240);
-const DIRECT_LINK_LOOKAHEAD: usize = 3;
+const DIRECT_LINK_WARM_CONCURRENCY: usize = 4;
+const DIRECT_LINK_REFRESH_POLL: Duration = Duration::from_secs(20);
+const MEDIA_ACTIVE_WINDOW: Duration = Duration::from_secs(600);
+const MEDIA_ACTIVITY_TOUCH_INTERVAL: Duration = Duration::from_secs(20);
 const CLOUD_RESOLVE_TIMEOUT: Duration = Duration::from_secs(45);
-const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const UPSTREAM_PACKET_TIMEOUT: Duration = Duration::from_secs(20);
+const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const UPSTREAM_PACKET_TIMEOUT: Duration = Duration::from_secs(8);
+const MEDIA_SOURCE_REPLACED: &str = "Media source was replaced";
 
 static SERVER_PORT: std::sync::OnceLock<Arc<Mutex<Option<u16>>>> = std::sync::OnceLock::new();
 
@@ -41,26 +46,52 @@ fn get_server_port() -> Arc<Mutex<Option<u16>>> {
 // ========================================================
 #[derive(Clone)]
 struct CachedMedia {
+    source_key: String,
     chunks_str: String,
-    total_size: usize,
+    total_size: u64,
     urls: Vec<String>,
     chunk_password: Option<String>,
     direct_urls: Vec<Option<CachedDirectUrl>>,
-    expires_at: Instant,
+    last_accessed_at: Instant,
 }
 
 #[derive(Clone)]
 struct CachedDirectUrl {
     url: String,
+    refresh_at: Instant,
     expires_at: Instant,
+}
+
+impl CachedDirectUrl {
+    fn new(url: String) -> Self {
+        let now = Instant::now();
+        Self {
+            url,
+            refresh_at: now + DIRECT_LINK_REFRESH_AFTER,
+            expires_at: now + DIRECT_LINK_TTL,
+        }
+    }
+
+    fn is_usable_at(&self, now: Instant) -> bool {
+        now < self.expires_at
+    }
+
+    fn needs_refresh_at(&self, now: Instant) -> bool {
+        now >= self.refresh_at
+    }
 }
 
 static URL_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<u64, CachedMedia>>>> =
     std::sync::OnceLock::new();
-type MediaResolveLocks = Arc<Mutex<HashMap<u64, Arc<Mutex<()>>>>>;
+type MediaResolveLocks = Arc<Mutex<HashMap<(u64, String), Arc<Mutex<()>>>>>;
 static MEDIA_RESOLVE_LOCKS: std::sync::OnceLock<MediaResolveLocks> = std::sync::OnceLock::new();
-type DirectResolveLocks = Arc<Mutex<HashMap<(u64, usize), Arc<Mutex<()>>>>>;
+type DirectResolveLocks = Arc<Mutex<HashMap<(u64, String, usize), Arc<Mutex<()>>>>>;
 static DIRECT_RESOLVE_LOCKS: std::sync::OnceLock<DirectResolveLocks> = std::sync::OnceLock::new();
+static DIRECT_LINK_WARM_SEMAPHORE: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
+static WARMING_DIRECT_LINKS: std::sync::OnceLock<Arc<Mutex<HashSet<(u64, String, usize)>>>> =
+    std::sync::OnceLock::new();
+static ACTIVE_REFRESH_SUPERVISORS: std::sync::OnceLock<Arc<Mutex<HashSet<(u64, String)>>>> =
+    std::sync::OnceLock::new();
 static STREAM_CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
 static LEGACY_CHUNK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
 static COVERT_CHUNK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -103,7 +134,7 @@ fn chunk_file_name(file: &serde_json::Value) -> &str {
 fn order_cloud_chunks(
     files: &mut [serde_json::Value],
     expected_chunks: usize,
-    total_size: usize,
+    total_size: u64,
 ) -> Result<bool, String> {
     if files.len() != expected_chunks {
         return Err(format!(
@@ -140,20 +171,22 @@ fn order_cloud_chunks(
 
     // With no decryptable names, retain an already oldest-first response when its final entry is
     // the expected short tail. Otherwise use Lanzou's normal newest-first ordering.
-    let tail_size =
-        total_size.saturating_sub(CHUNK_SIZE.saturating_mul(expected_chunks.saturating_sub(1)));
+    let tail_size = total_size.saturating_sub(
+        CHUNK_SIZE
+            .saturating_mul(u64::try_from(expected_chunks.saturating_sub(1)).unwrap_or(u64::MAX)),
+    );
     let first_size = files
         .first()
         .and_then(|file| file.get("size"))
         .and_then(|size| size.as_str())
         .map(parse_size_to_bytes)
-        .unwrap_or(0) as usize;
+        .unwrap_or(0);
     let last_size = files
         .last()
         .and_then(|file| file.get("size"))
         .and_then(|size| size.as_str())
         .map(parse_size_to_bytes)
-        .unwrap_or(0) as usize;
+        .unwrap_or(0);
     let already_oldest_first = tail_size < CHUNK_SIZE
         && last_size > 0
         && last_size < CHUNK_SIZE
@@ -167,20 +200,76 @@ fn order_cloud_chunks(
 #[derive(Debug, PartialEq, Eq)]
 struct ChunkWindow {
     index: usize,
-    local_start: usize,
-    local_end: usize,
-    length: usize,
+    local_start: u64,
+    local_end: u64,
+    length: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryAction {
+    RetrySameUrl,
+    RefreshLink,
+    Fail,
+}
+
+#[derive(Default)]
+struct StreamRecovery {
+    retried_current_url: bool,
+    refreshed_link: bool,
+}
+
+impl StreamRecovery {
+    fn transport_failure(&mut self) -> RecoveryAction {
+        if !self.retried_current_url {
+            self.retried_current_url = true;
+            RecoveryAction::RetrySameUrl
+        } else if !self.refreshed_link {
+            self.refreshed_link = true;
+            self.retried_current_url = false;
+            RecoveryAction::RefreshLink
+        } else {
+            RecoveryAction::Fail
+        }
+    }
+
+    fn rejected_link(&mut self) -> RecoveryAction {
+        if self.refreshed_link {
+            RecoveryAction::Fail
+        } else {
+            self.refreshed_link = true;
+            self.retried_current_url = false;
+            RecoveryAction::RefreshLink
+        }
+    }
+}
+
+fn normalized_content_type(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn upstream_content_type_is_rejected(content_type: &str, expected_content_type: &str) -> bool {
+    let media_type = normalized_content_type(content_type);
+    let expected_media_type = normalized_content_type(expected_content_type);
+    media_type != expected_media_type
+        && (media_type == "text/html"
+            || media_type == "application/json"
+            || media_type.ends_with("+json"))
 }
 
 fn next_chunk_window(
-    global_offset: usize,
-    remaining: usize,
+    global_offset: u64,
+    remaining: u64,
     chunk_count: usize,
 ) -> Option<ChunkWindow> {
     if remaining == 0 {
         return None;
     }
-    let index = global_offset / CHUNK_SIZE;
+    let index = usize::try_from(global_offset / CHUNK_SIZE).ok()?;
     if index >= chunk_count {
         return None;
     }
@@ -195,39 +284,104 @@ fn next_chunk_window(
     })
 }
 
-async fn media_resolve_lock(vfs_id: u64) -> Arc<Mutex<()>> {
+fn direct_link_warm_order(chunk_count: usize) -> Vec<usize> {
+    if chunk_count == 0 {
+        return Vec::new();
+    }
+
+    let mut order = Vec::with_capacity(chunk_count);
+    let mut seen = vec![false; chunk_count];
+    let push_unique = |index: usize, order: &mut Vec<usize>, seen: &mut [bool]| {
+        if index < seen.len() && !seen[index] {
+            seen[index] = true;
+            order.push(index);
+        }
+    };
+    push_unique(0, &mut order, &mut seen);
+    push_unique(chunk_count - 1, &mut order, &mut seen);
+    push_unique(1, &mut order, &mut seen);
+
+    let mut intervals = VecDeque::from([(1usize, chunk_count - 1)]);
+    while let Some((start, end)) = intervals.pop_front() {
+        if end <= start + 1 {
+            continue;
+        }
+        let midpoint = start + (end - start) / 2;
+        push_unique(midpoint, &mut order, &mut seen);
+        intervals.push_back((start, midpoint));
+        intervals.push_back((midpoint, end));
+    }
+    order
+}
+
+fn next_seek_chunk_to_warm(start_bytes: u64, chunk_count: usize) -> Option<usize> {
+    let current = usize::try_from(start_bytes / CHUNK_SIZE).ok()?;
+    current.checked_add(1).filter(|next| *next < chunk_count)
+}
+
+async fn media_resolve_lock(vfs_id: u64, source_key: &str) -> Arc<Mutex<()>> {
     let locks = MEDIA_RESOLVE_LOCKS
         .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
         .clone();
     let mut locks = locks.lock().await;
     locks
-        .entry(vfs_id)
+        .entry((vfs_id, source_key.to_string()))
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
 }
 
-async fn direct_resolve_lock(vfs_id: u64, chunk_index: usize) -> Arc<Mutex<()>> {
+async fn direct_resolve_lock(vfs_id: u64, source_key: &str, chunk_index: usize) -> Arc<Mutex<()>> {
     let locks = DIRECT_RESOLVE_LOCKS
         .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
         .clone();
     let mut locks = locks.lock().await;
     locks
-        .entry((vfs_id, chunk_index))
+        .entry((vfs_id, source_key.to_string(), chunk_index))
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
 }
 
-async fn cached_media(vfs_id: u64) -> Option<CachedMedia> {
+async fn cached_media(vfs_id: u64, source_key: &str) -> Option<CachedMedia> {
     let cache = get_cache();
     let mut cache = cache.lock().await;
-    match cache.get(&vfs_id) {
-        Some(entry) if Instant::now() < entry.expires_at => Some(entry.clone()),
-        Some(_) => {
-            cache.remove(&vfs_id);
-            None
-        }
-        None => None,
+    let entry = cache
+        .get_mut(&vfs_id)
+        .filter(|entry| entry.source_key == source_key)?;
+    entry.last_accessed_at = Instant::now();
+    Some(entry.clone())
+}
+
+fn media_source_key(node: &crate::heriheri::VfsNode) -> String {
+    format!(
+        "{}:{}|{}:{}|{}:{}|{}:{}|{}",
+        node.lanzou_id.len(),
+        node.lanzou_id,
+        node.chunks.len(),
+        node.chunks,
+        node.size.len(),
+        node.size,
+        node.md5.len(),
+        node.md5,
+        node.time,
+    )
+}
+
+async fn current_media_source_key(vfs_id: u64, state: &AppState) -> Result<String, String> {
+    let vfs = state.vfs.lock().await;
+    let node = vfs
+        .as_ref()
+        .and_then(|tree| tree.nodes.get(&vfs_id))
+        .ok_or_else(|| "Node not found".to_string())?;
+    if node.node_type == crate::heriheri::NodeType::Directory {
+        return Err("Cannot stream a directory".to_string());
     }
+    Ok(media_source_key(node))
+}
+
+async fn media_source_is_current(vfs_id: u64, source_key: &str, state: &AppState) -> bool {
+    current_media_source_key(vfs_id, state)
+        .await
+        .is_ok_and(|current| current == source_key)
 }
 
 // ========================================================
@@ -339,10 +493,7 @@ fn parse_size_to_bytes(s: &str) -> u64 {
     (val * multiplier) as u64
 }
 
-fn parse_byte_range(
-    range_header: Option<&str>,
-    total_size: usize,
-) -> Result<(usize, usize, bool), ()> {
+fn parse_byte_range(range_header: Option<&str>, total_size: u64) -> Result<(u64, u64, bool), ()> {
     if total_size == 0 {
         return Err(());
     }
@@ -355,18 +506,18 @@ fn parse_byte_range(
     }
     let (start, end) = range.split_once('-').ok_or(())?;
     let (start, end) = if start.is_empty() {
-        let suffix = end.parse::<usize>().map_err(|_| ())?;
+        let suffix = end.parse::<u64>().map_err(|_| ())?;
         if suffix == 0 {
             return Err(());
         }
         let suffix = suffix.min(total_size);
         (total_size - suffix, total_size - 1)
     } else {
-        let start = start.parse::<usize>().map_err(|_| ())?;
+        let start = start.parse::<u64>().map_err(|_| ())?;
         let end = if end.is_empty() {
             total_size - 1
         } else {
-            end.parse::<usize>().map_err(|_| ())?.min(total_size - 1)
+            end.parse::<u64>().map_err(|_| ())?.min(total_size - 1)
         };
         (start, end)
     };
@@ -477,12 +628,12 @@ pub async fn run_server(listener: tokio::net::TcpListener, state: AppState, app:
 async fn resolve_lanzou_media(
     vfs_id: u64,
     state: &AppState,
-) -> Result<(String, String, Option<String>, usize), String> {
+) -> Result<(String, String, Option<String>, u64), String> {
     let vfs_guard = state.vfs.lock().await;
     let tree = vfs_guard.as_ref().ok_or("VFS Offline")?;
     let node = tree.nodes.get(&vfs_id).cloned().ok_or("Node not found")?;
 
-    let total_size = parse_size_to_bytes(&node.size) as usize;
+    let total_size = parse_size_to_bytes(&node.size);
 
     if node.lanzou_id.starts_with("alien://") {
         let encoded = node.lanzou_id.replace("alien://", "");
@@ -533,7 +684,7 @@ async fn resolve_lanzou_media(
 async fn resolve_lanzou_media_bounded(
     vfs_id: u64,
     state: &AppState,
-) -> Result<(String, String, Option<String>, usize), String> {
+) -> Result<(String, String, Option<String>, u64), String> {
     tokio::time::timeout(CLOUD_RESOLVE_TIMEOUT, resolve_lanzou_media(vfs_id, state))
         .await
         .map_err(|_| format!("Timed out resolving cloud metadata for VFS node {vfs_id}"))?
@@ -752,18 +903,10 @@ async fn handle_dav_dispatch(
                     })
                     .unwrap_or(0);
 
-                let ext = current_node
+                let content_type = current_node
                     .as_ref()
-                    .and_then(|n| n.name.split('.').last())
-                    .unwrap_or("")
-                    .to_lowercase();
-
-                let content_type = match ext.as_str() {
-                    "mp4" => "video/mp4",
-                    "mkv" => "video/x-matroska",
-                    "webm" => "video/webm",
-                    _ => "application/octet-stream",
-                };
+                    .map(|node| content_type_for_name(&node.name))
+                    .unwrap_or("application/octet-stream");
 
                 drop(vfs_guard);
                 return Response::builder()
@@ -889,13 +1032,25 @@ async fn handle_stream(
             .unwrap_or("full")
     );
 
+    let source_key = match current_media_source_key(vfs_id, &state).await {
+        Ok(key) => key,
+        Err(error) => return (StatusCode::NOT_FOUND, error).into_response(),
+    };
+
     // --- 1. Resolve & cache metadata/direct links with one resolver per VFS node. ---
-    let media = match cached_media(vfs_id).await {
+    let media = match cached_media(vfs_id, &source_key).await {
         Some(m) => m,
         None => {
-            let resolve_lock = media_resolve_lock(vfs_id).await;
+            let resolve_lock = media_resolve_lock(vfs_id, &source_key).await;
             let _resolve_guard = resolve_lock.lock().await;
-            if let Some(media) = cached_media(vfs_id).await {
+            if !media_source_is_current(vfs_id, &source_key, &state).await {
+                return (
+                    StatusCode::CONFLICT,
+                    "Media changed while its stream metadata was being resolved; retry the request",
+                )
+                    .into_response();
+            }
+            if let Some(media) = cached_media(vfs_id, &source_key).await {
                 media
             } else {
                 println!("[STREAM] VFS {vfs_id}: resolving cloud metadata...");
@@ -925,7 +1080,30 @@ async fn handle_stream(
                             return (StatusCode::BAD_GATEWAY, e).into_response();
                         }
                     };
-                    urls.push(direct_url);
+                    urls.push(share_url);
+                    let new_entry = CachedMedia {
+                        source_key: source_key.clone(),
+                        chunks_str,
+                        total_size,
+                        urls,
+                        chunk_password: file_pwd,
+                        direct_urls: vec![Some(CachedDirectUrl::new(direct_url))],
+                        last_accessed_at: Instant::now(),
+                    };
+                    if !media_source_is_current(vfs_id, &source_key, &state).await {
+                        return (
+                            StatusCode::CONFLICT,
+                            "Media changed while its stream metadata was being resolved; retry the request",
+                        )
+                            .into_response();
+                    }
+                    get_cache().lock().await.insert(vfs_id, new_entry.clone());
+                    println!(
+                        "[STREAM] VFS {vfs_id}: metadata ready ({} object(s), {} bytes)",
+                        new_entry.urls.len(),
+                        new_entry.total_size
+                    );
+                    new_entry
                 } else {
                     let mut all_files = match resolve_folder_metadata_bounded(
                         &downloader,
@@ -1003,42 +1181,64 @@ async fn handle_stream(
                         )
                             .into_response();
                     }
+                    let direct_urls = vec![None; urls.len()];
+                    let new_entry = CachedMedia {
+                        source_key: source_key.clone(),
+                        chunks_str,
+                        total_size,
+                        urls,
+                        chunk_password: file_pwd,
+                        direct_urls,
+                        last_accessed_at: Instant::now(),
+                    };
+
+                    if !media_source_is_current(vfs_id, &source_key, &state).await {
+                        return (
+                            StatusCode::CONFLICT,
+                            "Media changed while its stream metadata was being resolved; retry the request",
+                        )
+                            .into_response();
+                    }
+                    get_cache().lock().await.insert(vfs_id, new_entry.clone());
+                    println!(
+                        "[STREAM] VFS {vfs_id}: metadata ready ({} object(s), {} bytes)",
+                        new_entry.urls.len(),
+                        new_entry.total_size
+                    );
+                    new_entry
                 }
-
-                let direct_urls = if chunks_str == "1" || chunks_str.is_empty() {
-                    urls.iter()
-                        .map(|url| {
-                            Some(CachedDirectUrl {
-                                url: url.clone(),
-                                expires_at: Instant::now() + DIRECT_LINK_TTL,
-                            })
-                        })
-                        .collect()
-                } else {
-                    vec![None; urls.len()]
-                };
-                let new_entry = CachedMedia {
-                    chunks_str,
-                    total_size,
-                    urls,
-                    chunk_password: file_pwd,
-                    direct_urls,
-                    expires_at: Instant::now() + Duration::from_secs(300),
-                };
-
-                get_cache().lock().await.insert(vfs_id, new_entry.clone());
-                println!(
-                    "[STREAM] VFS {vfs_id}: metadata ready ({} object(s), {} bytes)",
-                    new_entry.urls.len(),
-                    new_entry.total_size
-                );
-                new_entry
             }
         }
     };
 
+    warm_direct_links(
+        vfs_id,
+        source_key.clone(),
+        state.downloader.lock().await.clone(),
+        media.urls.clone(),
+        media.chunk_password.clone(),
+    )
+    .await;
+    ensure_direct_link_refresh_supervisor(
+        vfs_id,
+        source_key.clone(),
+        state.downloader.lock().await.clone(),
+        media.urls.clone(),
+        media.chunk_password.clone(),
+    )
+    .await;
+
     let total_size = media.total_size;
     let chunks_str_clone = media.chunks_str.clone();
+    let media_name = {
+        let vfs_guard = state.vfs.lock().await;
+        vfs_guard
+            .as_ref()
+            .and_then(|tree| tree.nodes.get(&vfs_id))
+            .map(|node| node.name.clone())
+            .unwrap_or_default()
+    };
+    let response_content_type = content_type_for_name(&media_name);
 
     if total_size == 0 {
         return (StatusCode::NO_CONTENT, HeaderMap::new(), "").into_response();
@@ -1063,39 +1263,127 @@ async fn handle_stream(
     let chunk_length = end_bytes - start_bytes + 1;
     let req_client = get_stream_client();
 
+    if let Some(next_chunk) = next_seek_chunk_to_warm(start_bytes, media.urls.len()) {
+        warm_seek_neighbor_link(
+            vfs_id,
+            source_key.clone(),
+            state.downloader.lock().await.clone(),
+            media.urls[next_chunk].clone(),
+            media.chunk_password.clone(),
+            next_chunk,
+        );
+    }
+
     let state_clone = Arc::clone(&state);
 
     // --- 4. Pipeline Engine with Eager Buffering, Clamping, and Auto-Refresh ---
     let body_stream: BoxStream<'static, Result<axum::body::Bytes, std::io::Error>> =
         if chunks_str_clone == "1" || chunks_str_clone.is_empty() {
-            let mut active_url = media.urls[0].clone();
+            let share_url = media.urls[0].clone();
+            let file_password = media.chunk_password.clone();
+            let downloader_stream = state_clone.downloader.lock().await.clone();
+            let stream_source_key = source_key.clone();
+            let mut active_url = cached_direct_url(vfs_id, &stream_source_key, 0)
+                .await
+                .unwrap_or_default();
 
             let stream = async_stream::try_stream! {
                 let mut current_global_ptr = start_bytes;
+                let mut last_activity_touch = Instant::now();
 
                 while current_global_ptr <= end_bytes {
-                    let mut retry = 0;
+                    let mut recovery = StreamRecovery::default();
 
                     loop {
-                        let resp = tokio::time::timeout(
+                        if active_url.is_empty() {
+                            active_url = resolve_cached_chunk_link(
+                                vfs_id,
+                                &stream_source_key,
+                                0,
+                                &downloader_stream,
+                                &share_url,
+                                file_password.as_deref(),
+                            )
+                            .await
+                            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+                        }
+                        let resp_result = tokio::time::timeout(
                             UPSTREAM_REQUEST_TIMEOUT,
                             req_client.get(&active_url)
                                 .header("Range", format!("bytes={}-{}", current_global_ptr, end_bytes))
                                 .send(),
                         )
-                        .await
-                        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "Upstream media request timed out before headers"))?
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                        .await;
+                        let resp = match resp_result {
+                            Ok(Ok(resp)) => resp,
+                            Ok(Err(error)) => {
+                                println!("[PROXY] Upstream request failed before headers: {error}");
+                                match recovery.transport_failure() {
+                                    RecoveryAction::RetrySameUrl => continue,
+                                    RecoveryAction::RefreshLink => {
+                                        invalidate_direct_url(
+                                            vfs_id,
+                                            &stream_source_key,
+                                            0,
+                                            &active_url,
+                                        )
+                                        .await;
+                                        active_url.clear();
+                                        continue;
+                                    }
+                                    RecoveryAction::Fail => Err(std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        "Persistent upstream request error",
+                                    ))?,
+                                }
+                            }
+                            Err(_) => {
+                                println!("[PROXY] Upstream request timed out before headers");
+                                match recovery.transport_failure() {
+                                    RecoveryAction::RetrySameUrl => continue,
+                                    RecoveryAction::RefreshLink => {
+                                        invalidate_direct_url(
+                                            vfs_id,
+                                            &stream_source_key,
+                                            0,
+                                            &active_url,
+                                        )
+                                        .await;
+                                        active_url.clear();
+                                        continue;
+                                    }
+                                    RecoveryAction::Fail => Err(std::io::Error::new(
+                                        std::io::ErrorKind::TimedOut,
+                                        "Persistent upstream header timeout",
+                                    ))?,
+                                }
+                            }
+                        };
 
-                        if resp.status().is_success() && (current_global_ptr == 0 || resp.status().as_u16() == 206) {
+                        let content_type = resp
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or("");
+                        if resp.status().is_success()
+                            && (current_global_ptr == 0 || resp.status().as_u16() == 206)
+                            && !upstream_content_type_is_rejected(
+                                content_type,
+                                response_content_type,
+                            )
+                        {
                             let mut bytes = resp.bytes_stream();
-                            let mut delivered = 0usize;
+                            let mut delivered = 0u64;
                             let requested = end_bytes - current_global_ptr + 1;
                             let mut interrupted_before_data = false;
                             loop {
                                 let packet = match tokio::time::timeout(UPSTREAM_PACKET_TIMEOUT, bytes.next()).await {
                                     Ok(Some(packet)) => packet,
-                                    Ok(None) => break,
+                                    Ok(None) if delivered > 0 => break,
+                                    Ok(None) => {
+                                        interrupted_before_data = true;
+                                        break;
+                                    }
                                     Err(_) if delivered > 0 => {
                                         println!("[PROXY] Upstream body stalled after {delivered} bytes. Resuming.");
                                         break;
@@ -1119,56 +1407,65 @@ async fn handle_stream(
                                     }
                                 };
                                 if packet.is_empty() { continue; }
-                                let take = packet.len().min(requested - delivered);
+                                let take = (packet.len() as u64).min(requested - delivered) as usize;
                                 if take == 0 { break; }
                                 let packet = packet.slice(..take);
-                                delivered += take;
-                                current_global_ptr += take;
+                                delivered += take as u64;
+                                current_global_ptr += take as u64;
+                                if last_activity_touch.elapsed() >= MEDIA_ACTIVITY_TOUCH_INTERVAL {
+                                    touch_cached_media(vfs_id, &stream_source_key).await;
+                                    last_activity_touch = Instant::now();
+                                }
                                 yield packet;
                                 if delivered == requested { break; }
                             }
                             if interrupted_before_data {
-                                if retry > 0 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent upstream stream error"))?; }
-                                retry += 1;
-                                get_cache().lock().await.remove(&vfs_id);
-                                let (_, new_share_url, new_file_pwd, _) = resolve_lanzou_media_bounded(vfs_id, &state_clone)
-                                    .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                                let downloader = state_clone.downloader.lock().await.clone();
-                                active_url = resolve_direct_link_bounded(&downloader, &new_share_url, new_file_pwd.as_deref())
-                                    .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                                continue;
+                                match recovery.transport_failure() {
+                                    RecoveryAction::RetrySameUrl => continue,
+                                    RecoveryAction::RefreshLink => {
+                                        invalidate_direct_url(
+                                            vfs_id,
+                                            &stream_source_key,
+                                            0,
+                                            &active_url,
+                                        )
+                                        .await;
+                                        active_url.clear();
+                                        continue;
+                                    }
+                                    RecoveryAction::Fail => Err(std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        "Persistent upstream stream error",
+                                    ))?,
+                                }
                             }
                             if delivered == 0 {
                                 Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "CDN returned an empty media range"))?;
                             }
                             break;
                         } else {
-                            if retry > 0 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent CDN Error"))?; }
-                            retry += 1;
-
-                            println!("[PROXY] CDN Rejected Link (HTTP {}). Auto-refreshing cache...", resp.status());
-                            get_cache().lock().await.remove(&vfs_id);
-
-                            let (_, new_share_url, new_file_pwd, _) = resolve_lanzou_media_bounded(vfs_id, &state_clone)
-                                .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-                            let downloader = state_clone.downloader.lock().await.clone();
-                            active_url = resolve_direct_link_bounded(&downloader, &new_share_url, new_file_pwd.as_deref())
-                                .await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-                            let new_entry = CachedMedia {
-                                chunks_str: chunks_str_clone.clone(),
-                                total_size,
-                                urls: vec![active_url.clone()],
-                                chunk_password: new_file_pwd,
-                                direct_urls: vec![Some(CachedDirectUrl {
-                                    url: active_url.clone(),
-                                    expires_at: Instant::now() + DIRECT_LINK_TTL,
-                                })],
-                                expires_at: Instant::now() + Duration::from_secs(300),
-                            };
-                            get_cache().lock().await.insert(vfs_id, new_entry);
-                            println!("[PROXY] Cache Refreshed. Resuming stream.");
+                            println!(
+                                "[PROXY] CDN Rejected Link (HTTP {} | {}). Auto-refreshing cache...",
+                                resp.status(),
+                                content_type
+                            );
+                            match recovery.rejected_link() {
+                                RecoveryAction::RefreshLink => {
+                                    invalidate_direct_url(
+                                        vfs_id,
+                                        &stream_source_key,
+                                        0,
+                                        &active_url,
+                                    )
+                                    .await;
+                                    active_url.clear();
+                                }
+                                RecoveryAction::Fail => Err(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "Persistent CDN rejection after link refresh",
+                                ))?,
+                                RecoveryAction::RetrySameUrl => unreachable!(),
+                            }
                         }
                     }
                 }
@@ -1177,12 +1474,13 @@ async fn handle_stream(
         } else {
             let active_urls = media.urls.clone();
             let chunk_password = media.chunk_password.clone();
+            let stream_source_key = source_key.clone();
             let downloader_stream = state_clone.downloader.lock().await.clone();
 
             let stream = async_stream::try_stream! {
                 let mut remaining_to_send = chunk_length;
                 let mut current_global_ptr = start_bytes;
-                let mut pre_resolve_tasks: HashMap<usize, tokio::task::JoinHandle<Result<String, String>>> = HashMap::new();
+                let mut last_activity_touch = Instant::now();
 
                 while remaining_to_send > 0 {
                     let chunk_window = next_chunk_window(
@@ -1197,42 +1495,12 @@ async fn handle_stream(
                     let chunk_local_start = chunk_window.local_start;
                     let chunk_local_end = chunk_window.local_end;
                     let chunk_share_url = &active_urls[chunk_idx];
-                    let mut retry = 0;
-                    let mut direct_url = cached_direct_url(vfs_id, chunk_idx).await.unwrap_or_default();
+                    let mut recovery = StreamRecovery::default();
+                    let mut direct_url = cached_direct_url(vfs_id, &stream_source_key, chunk_idx).await.unwrap_or_default();
 
                     loop {
                         if direct_url.is_empty() {
-                            if let Some(task) = pre_resolve_tasks.remove(&chunk_idx) {
-                                match task.await {
-                                    Ok(Ok(url)) => direct_url = url,
-                                    Ok(Err(error)) => {
-                                        println!("[STREAM] Lookahead for chunk {} failed: {error}. Resolving again.", chunk_idx + 1);
-                                    }
-                                    Err(error) => {
-                                        println!("[STREAM] Lookahead task for chunk {} was unavailable: {error}. Resolving again.", chunk_idx + 1);
-                                    }
-                                }
-                            }
-                            if direct_url.is_empty() {
-                                direct_url = resolve_cached_chunk_link(vfs_id, chunk_idx, &downloader_stream, chunk_share_url, chunk_password.as_deref()).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                            }
-                            store_direct_url(vfs_id, chunk_idx, direct_url.clone()).await;
-                        }
-
-                        for offset in 1..=DIRECT_LINK_LOOKAHEAD {
-                            let target_idx = chunk_idx + offset;
-                            if target_idx < active_urls.len()
-                                && cached_direct_url(vfs_id, target_idx).await.is_none()
-                                && !pre_resolve_tasks.contains_key(&target_idx)
-                            {
-                                let dl_clone = downloader_stream.clone();
-                                let next_share_url = active_urls[target_idx].clone();
-                                let next_password = chunk_password.clone();
-                                let prefetch_vfs_id = vfs_id;
-                                pre_resolve_tasks.insert(target_idx, tokio::spawn(async move {
-                                    resolve_cached_chunk_link(prefetch_vfs_id, target_idx, &dl_clone, &next_share_url, next_password.as_deref()).await
-                                }));
-                            }
+                            direct_url = resolve_cached_chunk_link(vfs_id, &stream_source_key, chunk_idx, &downloader_stream, chunk_share_url, chunk_password.as_deref()).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                         }
 
                         let resp_res = tokio::time::timeout(
@@ -1247,15 +1515,25 @@ async fn handle_stream(
                                 let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
 
                                 let honors_range = chunk_local_start == 0 || resp.status().as_u16() == 206;
-                                if resp.status().is_success() && honors_range && !ctype.contains("text/html") {
+                                if resp.status().is_success()
+                                    && honors_range
+                                    && !upstream_content_type_is_rejected(
+                                        ctype,
+                                        response_content_type,
+                                    )
+                                {
                                     let mut bytes = resp.bytes_stream();
-                                    let mut delivered = 0usize;
+                                    let mut delivered = 0u64;
                                     let requested = chunk_window.length;
                                     let mut interrupted_before_data = false;
                                     loop {
                                         let packet = match tokio::time::timeout(UPSTREAM_PACKET_TIMEOUT, bytes.next()).await {
                                             Ok(Some(packet)) => packet,
-                                            Ok(None) => break,
+                                            Ok(None) if delivered > 0 => break,
+                                            Ok(None) => {
+                                                interrupted_before_data = true;
+                                                break;
+                                            }
                                             Err(_) if delivered > 0 => {
                                                 println!("[PROXY] Cloud chunk {chunk_idx} stalled after {delivered} bytes. Resuming.");
                                                 break;
@@ -1279,21 +1557,40 @@ async fn handle_stream(
                                             }
                                         };
                                         if packet.is_empty() { continue; }
-                                        let take = packet.len().min(requested - delivered);
+                                        let take =
+                                            (packet.len() as u64).min(requested - delivered) as usize;
                                         if take == 0 { break; }
                                         let packet = packet.slice(..take);
-                                        delivered += take;
-                                        current_global_ptr += take;
-                                        remaining_to_send = remaining_to_send.saturating_sub(take);
+                                        delivered += take as u64;
+                                        current_global_ptr += take as u64;
+                                        remaining_to_send =
+                                            remaining_to_send.saturating_sub(take as u64);
+                                        if last_activity_touch.elapsed() >= MEDIA_ACTIVITY_TOUCH_INTERVAL {
+                                            touch_cached_media(vfs_id, &stream_source_key).await;
+                                            last_activity_touch = Instant::now();
+                                        }
                                         yield packet;
                                         if delivered == requested { break; }
                                     }
                                     if interrupted_before_data {
-                                        if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent upstream stream error"))?; }
-                                        retry += 1;
-                                        invalidate_direct_url(vfs_id, chunk_idx).await;
-                                        direct_url = String::new();
-                                        continue;
+                                        match recovery.transport_failure() {
+                                            RecoveryAction::RetrySameUrl => continue,
+                                            RecoveryAction::RefreshLink => {
+                                                invalidate_direct_url(
+                                                    vfs_id,
+                                                    &stream_source_key,
+                                                    chunk_idx,
+                                                    &direct_url,
+                                                )
+                                                .await;
+                                                direct_url.clear();
+                                                continue;
+                                            }
+                                            RecoveryAction::Fail => Err(std::io::Error::new(
+                                                std::io::ErrorKind::Other,
+                                                "Persistent upstream stream error",
+                                            ))?,
+                                        }
                                     }
                                     if delivered == 0 {
                                         Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "CDN returned an empty media chunk"))?;
@@ -1301,50 +1598,76 @@ async fn handle_stream(
                                     break; // Success!
                                 } else {
                                     println!("[PROXY] CDN Rejected Link (HTTP {} | {}). Retrying JIT...", resp.status(), ctype);
-                                    if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Persistent CDN Error"))?; }
-                                    retry += 1;
-                                    invalidate_direct_url(vfs_id, chunk_idx).await;
-                                    direct_url = String::new();
+                                    match recovery.rejected_link() {
+                                        RecoveryAction::RefreshLink => {
+                                            invalidate_direct_url(
+                                                vfs_id,
+                                                &stream_source_key,
+                                                chunk_idx,
+                                                &direct_url,
+                                            )
+                                            .await;
+                                            direct_url.clear();
+                                        }
+                                        RecoveryAction::Fail => Err(std::io::Error::new(
+                                            std::io::ErrorKind::Other,
+                                            "Persistent CDN rejection after link refresh",
+                                        ))?,
+                                        RecoveryAction::RetrySameUrl => unreachable!(),
+                                    }
                                 }
                             },
                             Ok(Err(e)) => {
                                 println!("[PROXY] Network Error: {}", e);
-                                if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::Other, "Network Error"))?; }
-                                retry += 1;
-                                invalidate_direct_url(vfs_id, chunk_idx).await;
-                                direct_url = String::new();
+                                match recovery.transport_failure() {
+                                    RecoveryAction::RetrySameUrl => continue,
+                                    RecoveryAction::RefreshLink => {
+                                        invalidate_direct_url(
+                                            vfs_id,
+                                            &stream_source_key,
+                                            chunk_idx,
+                                            &direct_url,
+                                        )
+                                        .await;
+                                        direct_url.clear();
+                                    }
+                                    RecoveryAction::Fail => Err(std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        "Persistent chunk network error",
+                                    ))?,
+                                }
                             },
                             Err(_) => {
                                 println!("[PROXY] Cloud chunk {chunk_idx} timed out before response headers");
-                                if retry > 3 { Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Cloud chunk request timed out"))?; }
-                                retry += 1;
-                                invalidate_direct_url(vfs_id, chunk_idx).await;
-                                direct_url = String::new();
+                                match recovery.transport_failure() {
+                                    RecoveryAction::RetrySameUrl => continue,
+                                    RecoveryAction::RefreshLink => {
+                                        invalidate_direct_url(
+                                            vfs_id,
+                                            &stream_source_key,
+                                            chunk_idx,
+                                            &direct_url,
+                                        )
+                                        .await;
+                                        direct_url.clear();
+                                    }
+                                    RecoveryAction::Fail => Err(std::io::Error::new(
+                                        std::io::ErrorKind::TimedOut,
+                                        "Persistent chunk header timeout",
+                                    ))?,
+                                }
                             }
                         }
                     }
                 }
-                // Dropping JoinHandles detaches unfinished lookahead work. Each task stores its
-                // result in the shared cache, so a later range request can reuse it immediately.
-                drop(pre_resolve_tasks);
             };
             Box::pin(stream)
         };
 
     // --- 5. Return HTTP Headers ---
-    let media_name = {
-        let vfs_guard = state.vfs.lock().await;
-        vfs_guard
-            .as_ref()
-            .and_then(|t| t.nodes.get(&vfs_id))
-            .map(|n| n.name.clone())
-            .unwrap_or_default()
-    };
-    let content_type = content_type_for_name(&media_name);
-
     let mut response_builder = Response::builder()
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_TYPE, response_content_type)
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
 
     if is_partial {
@@ -1369,11 +1692,16 @@ async fn handle_stream(
 #[cfg(test)]
 mod tests {
     use super::{
-        next_chunk_window, order_cloud_chunks, parse_byte_range, parse_size_to_bytes,
-        select_lan_ipv4, ChunkWindow, CHUNK_SIZE,
+        cached_direct_url, content_type_for_name, direct_link_warm_order, direct_resolve_lock,
+        direct_url_needs_refresh, get_cache, invalidate_direct_url, media_resolve_lock,
+        next_chunk_window, next_seek_chunk_to_warm, order_cloud_chunks, parse_byte_range,
+        parse_size_to_bytes, select_lan_ipv4, store_direct_url, touch_cached_media,
+        upstream_content_type_is_rejected, CachedDirectUrl, CachedMedia, ChunkWindow,
+        RecoveryAction, StreamRecovery, CHUNK_SIZE,
     };
     use serde_json::json;
     use std::net::{IpAddr, Ipv4Addr};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn parses_full_open_and_suffix_ranges() {
@@ -1484,6 +1812,196 @@ mod tests {
     }
 
     #[test]
+    fn supports_seek_ranges_beyond_32_bit_offsets() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let start = 5 * GIB + 17;
+        let end = start + 4095;
+        assert_eq!(
+            parse_byte_range(Some(&format!("bytes={start}-{end}")), 6 * GIB),
+            Ok((start, end, true))
+        );
+
+        let local_start = start % CHUNK_SIZE;
+        assert_eq!(
+            next_chunk_window(start, 4096, 60),
+            Some(ChunkWindow {
+                index: usize::try_from(start / CHUNK_SIZE).unwrap(),
+                local_start,
+                local_end: local_start + 4095,
+                length: 4096,
+            })
+        );
+    }
+
+    #[test]
+    fn prioritizes_start_tail_and_timeline_regions_during_link_warmup() {
+        assert!(direct_link_warm_order(0).is_empty());
+        assert_eq!(direct_link_warm_order(1), vec![0]);
+
+        let order = direct_link_warm_order(10);
+        assert_eq!(&order[..4], &[0, 9, 1, 5]);
+        let mut sorted = order;
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn warms_the_chunk_after_a_random_seek() {
+        assert_eq!(next_seek_chunk_to_warm(0, 4), Some(1));
+        assert_eq!(next_seek_chunk_to_warm(CHUNK_SIZE * 2 + 17, 4), Some(3));
+        assert_eq!(next_seek_chunk_to_warm(CHUNK_SIZE * 3, 4), None);
+        assert_eq!(next_seek_chunk_to_warm(0, 1), None);
+    }
+
+    #[test]
+    fn direct_links_refresh_before_they_expire() {
+        let now = Instant::now();
+        let entry = CachedDirectUrl {
+            url: "https://cdn.invalid/file".to_string(),
+            refresh_at: now + Duration::from_secs(10),
+            expires_at: now + Duration::from_secs(20),
+        };
+        assert!(entry.is_usable_at(now + Duration::from_secs(15)));
+        assert!(entry.needs_refresh_at(now + Duration::from_secs(15)));
+        assert!(!entry.is_usable_at(now + Duration::from_secs(20)));
+    }
+
+    #[test]
+    fn bounds_stream_recovery_retries_and_link_refreshes() {
+        let mut transport = StreamRecovery::default();
+        assert_eq!(transport.transport_failure(), RecoveryAction::RetrySameUrl);
+        assert_eq!(transport.transport_failure(), RecoveryAction::RefreshLink);
+        assert_eq!(transport.transport_failure(), RecoveryAction::RetrySameUrl);
+        assert_eq!(transport.transport_failure(), RecoveryAction::Fail);
+
+        let mut rejection = StreamRecovery::default();
+        assert_eq!(rejection.rejected_link(), RecoveryAction::RefreshLink);
+        assert_eq!(rejection.rejected_link(), RecoveryAction::Fail);
+    }
+
+    #[test]
+    fn rejects_cloud_error_payloads_without_rejecting_generic_media() {
+        assert!(upstream_content_type_is_rejected(
+            "text/html; charset=utf-8",
+            "video/mp4"
+        ));
+        assert!(upstream_content_type_is_rejected(
+            "application/json",
+            "video/mp4"
+        ));
+        assert!(upstream_content_type_is_rejected(
+            "application/problem+json",
+            "audio/mpeg"
+        ));
+        assert!(!upstream_content_type_is_rejected(
+            "application/octet-stream",
+            "video/mp4"
+        ));
+        assert!(!upstream_content_type_is_rejected(
+            "application/json; charset=utf-8",
+            "application/json"
+        ));
+        assert!(!upstream_content_type_is_rejected(
+            "text/html; charset=utf-8",
+            "text/html; charset=utf-8"
+        ));
+        assert!(!upstream_content_type_is_rejected("video/mp4", "video/mp4"));
+        assert!(!upstream_content_type_is_rejected("", "video/mp4"));
+    }
+
+    #[test]
+    fn maps_advertised_media_and_document_content_types() {
+        assert_eq!(content_type_for_name("movie.mpeg"), "video/mpeg");
+        assert_eq!(content_type_for_name("audio.wma"), "audio/x-ms-wma");
+        assert_eq!(content_type_for_name("data.json"), "application/json");
+        assert_eq!(
+            content_type_for_name("page.html"),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            content_type_for_name("unknown.bin"),
+            "application/octet-stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn replacement_source_is_isolated_from_stale_background_work() {
+        const VFS_ID: u64 = u64::MAX - 10;
+        let original_access = Instant::now() - Duration::from_secs(30);
+        get_cache().lock().await.insert(
+            VFS_ID,
+            CachedMedia {
+                source_key: "replacement".to_string(),
+                chunks_str: "2".to_string(),
+                total_size: CHUNK_SIZE * 2,
+                urls: vec!["share-a".to_string(), "share-b".to_string()],
+                chunk_password: None,
+                direct_urls: vec![
+                    Some(CachedDirectUrl::new("replacement-url".to_string())),
+                    None,
+                ],
+                last_accessed_at: original_access,
+            },
+        );
+
+        assert_eq!(cached_direct_url(VFS_ID, "stale", 0).await, None);
+        assert!(direct_url_needs_refresh(VFS_ID, "stale", 0).await);
+        store_direct_url(VFS_ID, "stale", 0, "stale-url".to_string()).await;
+        invalidate_direct_url(VFS_ID, "stale", 0, "stale-url").await;
+        touch_cached_media(VFS_ID, "stale").await;
+
+        assert_eq!(
+            cached_direct_url(VFS_ID, "replacement", 0).await,
+            Some("replacement-url".to_string())
+        );
+        assert_eq!(
+            get_cache().lock().await[&VFS_ID].last_accessed_at,
+            original_access
+        );
+        let stale_lock = direct_resolve_lock(VFS_ID, "stale", 0).await;
+        let replacement_lock = direct_resolve_lock(VFS_ID, "replacement", 0).await;
+        assert!(!std::sync::Arc::ptr_eq(&stale_lock, &replacement_lock));
+        let stale_media_lock = media_resolve_lock(VFS_ID, "stale").await;
+        let replacement_media_lock = media_resolve_lock(VFS_ID, "replacement").await;
+        assert!(!std::sync::Arc::ptr_eq(
+            &stale_media_lock,
+            &replacement_media_lock
+        ));
+
+        get_cache().lock().await.remove(&VFS_ID);
+    }
+
+    #[tokio::test]
+    async fn stale_failure_cannot_erase_a_refreshed_direct_link() {
+        const VFS_ID: u64 = u64::MAX - 11;
+        get_cache().lock().await.insert(
+            VFS_ID,
+            CachedMedia {
+                source_key: "source".to_string(),
+                chunks_str: "2".to_string(),
+                total_size: CHUNK_SIZE * 2,
+                urls: vec!["share-a".to_string(), "share-b".to_string()],
+                chunk_password: None,
+                direct_urls: vec![
+                    Some(CachedDirectUrl::new("refreshed-url".to_string())),
+                    None,
+                ],
+                last_accessed_at: Instant::now(),
+            },
+        );
+
+        invalidate_direct_url(VFS_ID, "source", 0, "stale-url").await;
+        assert_eq!(
+            cached_direct_url(VFS_ID, "source", 0).await,
+            Some("refreshed-url".to_string())
+        );
+
+        invalidate_direct_url(VFS_ID, "source", 0, "refreshed-url").await;
+        assert_eq!(cached_direct_url(VFS_ID, "source", 0).await, None);
+        get_cache().lock().await.remove(&VFS_ID);
+    }
+
+    #[test]
     fn selects_a_physical_private_lan_over_virtual_addresses() {
         let interfaces = vec![
             (
@@ -1527,21 +2045,30 @@ mod tests {
 fn content_type_for_name(name: &str) -> &'static str {
     let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
     match ext.as_str() {
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
         "mkv" => "video/x-matroska",
         "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "avi" => "video/x-msvideo",
+        "mpeg" | "mpg" => "video/mpeg",
+        "ts" | "m2ts" => "video/mp2t",
+        "ogv" => "video/ogg",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
         "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "ogg" => "audio/ogg",
+        "opus" => "audio/opus",
+        "wma" => "audio/x-ms-wma",
         "pdf" => "application/pdf",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
-        "txt" | "c" | "cpp" | "rs" | "py" | "js" | "ts" | "md" | "log" => {
-            "text/plain; charset=utf-8"
-        }
+        "txt" | "c" | "cpp" | "rs" | "py" | "js" | "md" | "log" => "text/plain; charset=utf-8",
         "json" => "application/json",
+        "html" | "htm" => "text/html; charset=utf-8",
         "xls" => "application/vnd.ms-excel",
         "doc" => "application/msword",
         "ppt" => "application/vnd.ms-powerpoint",
@@ -1774,52 +2301,88 @@ fn get_stream_client() -> Client {
         .clone()
 }
 
-async fn cached_direct_url(vfs_id: u64, chunk_index: usize) -> Option<String> {
+async fn cached_direct_url(vfs_id: u64, source_key: &str, chunk_index: usize) -> Option<String> {
     let cache = get_cache();
     let lock = cache.lock().await;
+    let now = Instant::now();
     lock.get(&vfs_id)
+        .filter(|media| media.source_key == source_key)
         .and_then(|media| media.direct_urls.get(chunk_index))
         .and_then(Option::as_ref)
-        .filter(|entry| Instant::now() < entry.expires_at)
+        .filter(|entry| entry.is_usable_at(now))
         .map(|entry| entry.url.clone())
 }
 
-async fn store_direct_url(vfs_id: u64, chunk_index: usize, url: String) {
+async fn cache_contains_source(vfs_id: u64, source_key: &str) -> bool {
+    get_cache()
+        .lock()
+        .await
+        .get(&vfs_id)
+        .is_some_and(|media| media.source_key == source_key)
+}
+
+async fn direct_url_needs_refresh(vfs_id: u64, source_key: &str, chunk_index: usize) -> bool {
+    let cache = get_cache();
+    let lock = cache.lock().await;
+    let now = Instant::now();
+    lock.get(&vfs_id)
+        .filter(|media| media.source_key == source_key)
+        .and_then(|media| media.direct_urls.get(chunk_index))
+        .and_then(Option::as_ref)
+        .map(|entry| entry.needs_refresh_at(now))
+        .unwrap_or(true)
+}
+
+async fn store_direct_url(vfs_id: u64, source_key: &str, chunk_index: usize, url: String) {
     let cache = get_cache();
     let mut lock = cache.lock().await;
-    if let Some(media) = lock.get_mut(&vfs_id) {
+    if let Some(media) = lock
+        .get_mut(&vfs_id)
+        .filter(|media| media.source_key == source_key)
+    {
         if chunk_index < media.direct_urls.len() {
-            media.direct_urls[chunk_index] = Some(CachedDirectUrl {
-                url,
-                expires_at: Instant::now() + DIRECT_LINK_TTL,
-            });
+            media.direct_urls[chunk_index] = Some(CachedDirectUrl::new(url));
         }
     }
 }
 
-async fn invalidate_direct_url(vfs_id: u64, chunk_index: usize) {
+async fn invalidate_direct_url(
+    vfs_id: u64,
+    source_key: &str,
+    chunk_index: usize,
+    failed_url: &str,
+) {
     let cache = get_cache();
     let mut lock = cache.lock().await;
-    if let Some(media) = lock.get_mut(&vfs_id) {
-        if chunk_index < media.direct_urls.len() {
-            media.direct_urls[chunk_index] = None;
+    if let Some(media) = lock
+        .get_mut(&vfs_id)
+        .filter(|media| media.source_key == source_key)
+    {
+        if let Some(entry) = media.direct_urls.get_mut(chunk_index) {
+            if entry
+                .as_ref()
+                .is_some_and(|cached| cached.url == failed_url)
+            {
+                *entry = None;
+            }
         }
     }
 }
 
 async fn resolve_cached_chunk_link(
     vfs_id: u64,
+    source_key: &str,
     chunk_index: usize,
     downloader: &crate::lanzou_down::LanzouDownloader,
     share_url: &str,
     password: Option<&str>,
 ) -> Result<String, String> {
-    if let Some(url) = cached_direct_url(vfs_id, chunk_index).await {
+    if let Some(url) = cached_direct_url(vfs_id, source_key, chunk_index).await {
         return Ok(url);
     }
-    let resolve_lock = direct_resolve_lock(vfs_id, chunk_index).await;
+    let resolve_lock = direct_resolve_lock(vfs_id, source_key, chunk_index).await;
     let _resolve_guard = resolve_lock.lock().await;
-    if let Some(url) = cached_direct_url(vfs_id, chunk_index).await {
+    if let Some(url) = cached_direct_url(vfs_id, source_key, chunk_index).await {
         return Ok(url);
     }
     println!(
@@ -1827,6 +2390,183 @@ async fn resolve_cached_chunk_link(
         chunk_index + 1
     );
     let url = resolve_direct_link_bounded(downloader, share_url, password).await?;
-    store_direct_url(vfs_id, chunk_index, url.clone()).await;
+    store_direct_url(vfs_id, source_key, chunk_index, url.clone()).await;
     Ok(url)
+}
+
+async fn refresh_cached_chunk_link(
+    vfs_id: u64,
+    source_key: &str,
+    chunk_index: usize,
+    downloader: &crate::lanzou_down::LanzouDownloader,
+    share_url: &str,
+    password: Option<&str>,
+) -> Result<String, String> {
+    let resolve_lock = direct_resolve_lock(vfs_id, source_key, chunk_index).await;
+    let _resolve_guard = resolve_lock.lock().await;
+    if !cache_contains_source(vfs_id, source_key).await {
+        return Err(MEDIA_SOURCE_REPLACED.to_string());
+    }
+    if !direct_url_needs_refresh(vfs_id, source_key, chunk_index).await {
+        return cached_direct_url(vfs_id, source_key, chunk_index)
+            .await
+            .ok_or_else(|| "Direct-link cache changed during refresh".to_string());
+    }
+    let url = resolve_direct_link_bounded(downloader, share_url, password).await?;
+    store_direct_url(vfs_id, source_key, chunk_index, url.clone()).await;
+    Ok(url)
+}
+
+fn warm_seek_neighbor_link(
+    vfs_id: u64,
+    source_key: String,
+    downloader: crate::lanzou_down::LanzouDownloader,
+    share_url: String,
+    password: Option<String>,
+    chunk_index: usize,
+) {
+    tokio::spawn(async move {
+        let result = refresh_cached_chunk_link(
+            vfs_id,
+            &source_key,
+            chunk_index,
+            &downloader,
+            &share_url,
+            password.as_deref(),
+        )
+        .await;
+        if let Err(error) = result {
+            if error != MEDIA_SOURCE_REPLACED {
+                eprintln!(
+                    "[STREAM] Seek-neighbor direct-link warmup failed for VFS {vfs_id} chunk {}: {error}",
+                    chunk_index + 1
+                );
+            }
+        }
+    });
+}
+
+async fn warm_direct_links(
+    vfs_id: u64,
+    source_key: String,
+    downloader: crate::lanzou_down::LanzouDownloader,
+    share_urls: Vec<String>,
+    password: Option<String>,
+) {
+    if !cache_contains_source(vfs_id, &source_key).await {
+        return;
+    }
+    let warming = WARMING_DIRECT_LINKS
+        .get_or_init(|| Arc::new(Mutex::new(HashSet::new())))
+        .clone();
+    let semaphore = DIRECT_LINK_WARM_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(DIRECT_LINK_WARM_CONCURRENCY)))
+        .clone();
+
+    for chunk_index in direct_link_warm_order(share_urls.len()) {
+        let share_url = share_urls[chunk_index].clone();
+        if !direct_url_needs_refresh(vfs_id, &source_key, chunk_index).await {
+            continue;
+        }
+        {
+            let mut active = warming.lock().await;
+            if !active.insert((vfs_id, source_key.clone(), chunk_index)) {
+                continue;
+            }
+        }
+
+        let warming = warming.clone();
+        let semaphore = semaphore.clone();
+        let downloader = downloader.clone();
+        let password = password.clone();
+        let task_source_key = source_key.clone();
+        tokio::spawn(async move {
+            let result = match semaphore.acquire_owned().await {
+                Ok(_permit) => {
+                    if !cache_contains_source(vfs_id, &task_source_key).await {
+                        Err(MEDIA_SOURCE_REPLACED.to_string())
+                    } else {
+                        refresh_cached_chunk_link(
+                            vfs_id,
+                            &task_source_key,
+                            chunk_index,
+                            &downloader,
+                            &share_url,
+                            password.as_deref(),
+                        )
+                        .await
+                    }
+                }
+                Err(_) => Err("Direct-link warmup semaphore closed".to_string()),
+            };
+            if let Err(error) = result {
+                if error != MEDIA_SOURCE_REPLACED {
+                    eprintln!(
+                        "[STREAM] Background direct-link refresh failed for VFS {vfs_id} chunk {}: {error}",
+                        chunk_index + 1
+                    );
+                }
+            }
+            warming
+                .lock()
+                .await
+                .remove(&(vfs_id, task_source_key, chunk_index));
+        });
+    }
+}
+
+async fn touch_cached_media(vfs_id: u64, source_key: &str) {
+    let cache = get_cache();
+    let mut cache = cache.lock().await;
+    if let Some(media) = cache
+        .get_mut(&vfs_id)
+        .filter(|media| media.source_key == source_key)
+    {
+        media.last_accessed_at = Instant::now();
+    }
+}
+
+async fn ensure_direct_link_refresh_supervisor(
+    vfs_id: u64,
+    source_key: String,
+    downloader: crate::lanzou_down::LanzouDownloader,
+    share_urls: Vec<String>,
+    password: Option<String>,
+) {
+    let supervisors = ACTIVE_REFRESH_SUPERVISORS
+        .get_or_init(|| Arc::new(Mutex::new(HashSet::new())))
+        .clone();
+    {
+        let mut active = supervisors.lock().await;
+        if !active.insert((vfs_id, source_key.clone())) {
+            return;
+        }
+    }
+
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(DIRECT_LINK_REFRESH_POLL).await;
+            let should_continue = {
+                let cache = get_cache();
+                let cache = cache.lock().await;
+                cache
+                    .get(&vfs_id)
+                    .filter(|media| media.source_key == source_key)
+                    .map(|media| media.last_accessed_at.elapsed() < MEDIA_ACTIVE_WINDOW)
+                    .unwrap_or(false)
+            };
+            if !should_continue {
+                break;
+            }
+            warm_direct_links(
+                vfs_id,
+                source_key.clone(),
+                downloader.clone(),
+                share_urls.clone(),
+                password.clone(),
+            )
+            .await;
+        }
+        supervisors.lock().await.remove(&(vfs_id, source_key));
+    });
 }
