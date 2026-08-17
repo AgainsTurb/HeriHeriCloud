@@ -139,30 +139,32 @@ impl LanzouDownloader {
             .solve_lanzou_challenge(&html_initial, share_url)
             .await?;
 
-        // Type A
-        if html.contains("/ajaxm.php?file=")
+        // Type A: password-protected pages use the final non-empty isngis
+        // assignment as the sign sent to ajaxfile.php.
+        if html.contains("/ajaxfile.php?file=")
             && html.replace(" ", "").contains("action':'downprocess'")
-            && !html.contains("websignkey")
+            && html.contains("var isngis")
         {
             let re_comments = Regex::new(r"(?s)/\*.*?\*/").unwrap();
             let html_clean = re_comments.replace_all(&html, "");
 
-            let file_id_re = Regex::new(r"url\s*:\s*'/ajaxm\.php\?file=(\d+)'").unwrap();
-            let sign_re =
-                Regex::new(r"'action'\s*:\s*'downprocess'\s*,\s*'sign'\s*:\s*'([^']+)'").unwrap();
+            let file_id_re = Regex::new(r"url\s*:\s*'/ajaxfile\.php\?file=(\d+)'").unwrap();
+            let isngis_re = Regex::new(r"var\s+isngis\s*=\s*'([^']*)'").unwrap();
 
             let file_id = file_id_re
                 .captures(&html_clean)
                 .ok_or("Type A: missing file ID")?[1]
                 .to_string();
-            let sign = sign_re
-                .captures(&html_clean)
-                .ok_or("Type A: missing sign")?[1]
-                .to_string();
+            let sign = isngis_re
+                .captures_iter(&html_clean)
+                .map(|caps| caps[1].to_string())
+                .filter(|value| !value.is_empty())
+                .last()
+                .ok_or("Type A: missing isngis sign")?;
 
             let ajax_url = Url::parse(share_url)
                 .unwrap()
-                .join(&format!("/ajaxm.php?file={}", file_id))
+                .join(&format!("/ajaxfile.php?file={}", file_id))
                 .unwrap()
                 .to_string();
 
@@ -225,7 +227,7 @@ impl LanzouDownloader {
 
             let ajaxdata_re = Regex::new(r"var\s+ajaxdata\s*=\s*'([^']+)'").unwrap();
             let wp_sign_re = Regex::new(r"var\s+wp_sign\s*=\s*'([^']+)'").unwrap();
-            let file_re = Regex::new(r"url\s*:\s*'/ajaxm\.php\?file=(\d+)'").unwrap();
+            let file_re = Regex::new(r"url\s*:\s*'/ajaxfile\.php\?file=(\d+)'").unwrap();
 
             let ajaxdata = ajaxdata_re
                 .captures(&html_fn)
@@ -249,7 +251,7 @@ impl LanzouDownloader {
 
             let ajax_url = Url::parse(share_url)
                 .unwrap()
-                .join(&format!("/ajaxm.php?file={}", file_id))
+                .join(&format!("/ajaxfile.php?file={}", file_id))
                 .unwrap()
                 .to_string();
 
@@ -459,7 +461,7 @@ impl LanzouDownloader {
             post_data.insert("pwd", password.unwrap_or("").to_string());
 
             let filemore_url = parsed_url
-                .join(&format!("/filemoreajax.php?file={}", fid))
+                .join(&format!("/ajaxfile.php?file={}", fid))
                 .unwrap()
                 .to_string();
 
@@ -603,7 +605,7 @@ impl LanzouDownloader {
             post_data.insert("ls", "1".to_string());
             post_data.insert("pwd", password.unwrap_or("").to_string());
 
-            let filemore_url = parsed_url.join(&format!("/filemoreajax.php?file={}", fid)).unwrap().to_string();
+            let filemore_url = parsed_url.join(&format!("/ajaxfile.php?file={}", fid)).unwrap().to_string();
 
             let resp = self.client.post(&filemore_url).headers(get_ajax_headers(folder_url)).form(&post_data).send().await.map_err(|e| e.to_string())?;
 

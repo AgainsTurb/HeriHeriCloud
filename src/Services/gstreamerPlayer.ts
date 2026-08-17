@@ -7,6 +7,10 @@ import { platform } from "@tauri-apps/plugin-os";
 const COMMAND_PREFIX = "plugin:gstreamer-player|";
 const STARTUP_STATUS_KEY = "heriheri_native_player_startup";
 
+// Temporary cross-platform fallback. Set to true only when the native player
+// is ready to replace the WebView MediaPlayer on every supported platform.
+export const USE_NATIVE_MEDIA_PLAYER = false;
+
 interface PlayerStartupStatus {
   nodeId: number;
   title: string;
@@ -206,6 +210,10 @@ async function withTimeout<T>(operation: Promise<T>, milliseconds: number, messa
 export function isGStreamerMedia(name: string): boolean {
   const extension = name.split(".").pop()?.toLowerCase() || "";
   return GSTREAMER_MEDIA_EXTENSIONS.has(extension);
+}
+
+export function shouldUseNativeMediaPlayer(name: string): boolean {
+  return USE_NATIVE_MEDIA_PLAYER && isGStreamerMedia(name);
 }
 
 export async function openGStreamerMedia(

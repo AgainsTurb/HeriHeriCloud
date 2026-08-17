@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { dirname, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -112,6 +112,71 @@ function run(command, args, description) {
   if (result.status !== 0) throw new Error(`${description} exited with code ${result.status}`);
 }
 
+function elapsed(startedAt) {
+  const seconds = Math.floor((Date.now() - startedAt) / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+function waitForChild(child, description) {
+  return new Promise((resolve, reject) => {
+    child.once("error", (error) => reject(new Error(`${description} failed: ${error.message}`)));
+    child.once("close", (status, signal) => {
+      if (status === 0) resolve();
+      else reject(new Error(`${description} exited with ${signal ? `signal ${signal}` : `code ${status}`}`));
+    });
+  });
+}
+
+async function runWithHeartbeat(command, args, description) {
+  console.log(`[HeriHeriCloud] ${description}`);
+  const startedAt = Date.now();
+  const child = spawn(command, args, { cwd: projectRoot, env: process.env, stdio: "inherit" });
+  const heartbeat = setInterval(() => {
+    console.log(`[HeriHeriCloud] ${description} is still running (${elapsed(startedAt)})`);
+  }, 15_000);
+  try {
+    await waitForChild(child, description);
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+async function extractTarXz(archive, destination, description) {
+  if (process.platform !== "win32" || !commandSucceeds("7z", ["i"])) {
+    await runWithHeartbeat("tar", ["-xf", archive, "-C", destination], description);
+    return;
+  }
+
+  console.log(`[HeriHeriCloud] ${description} with 7-Zip`);
+  const startedAt = Date.now();
+  const decompress = spawn("7z", ["x", "-txz", "-so", "-bso0", "-bsp0", archive], {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const extract = spawn("7z", ["x", "-ttar", "-si", `-o${destination}`, "-y", "-bsp1"], {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: ["pipe", "inherit", "inherit"],
+  });
+  // An early consumer failure closes the pipe; do not turn that expected EPIPE
+  // into an unhandled Node stream error while the child status is being reported.
+  decompress.stdout.on("error", () => {});
+  decompress.stdout.pipe(extract.stdin);
+  const heartbeat = setInterval(() => {
+    console.log(`[HeriHeriCloud] ${description} is still running (${elapsed(startedAt)})`);
+  }, 15_000);
+  try {
+    await Promise.all([
+      waitForChild(decompress, `${description} decompression`),
+      waitForChild(extract, `${description} extraction`),
+    ]);
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
 function commandSucceeds(command, args) {
   const result = spawnSync(command, args, { cwd: projectRoot, env: process.env, stdio: "ignore" });
   return !result.error && result.status === 0;
@@ -188,22 +253,34 @@ async function setupMacOS() {
 async function setupAndroid() {
   const configured = process.env.GSTREAMER_ROOT_ANDROID;
   const marker = join("share", "gst-android", "ndk-build", "gstreamer-1.0.mk");
-  if (configured && existsSync(join(configured, marker))) {
+  const isUniversalRoot = (root) => Boolean(root) && ["arm64", "armv7", "x86", "x86_64"].every(
+    (architecture) => existsSync(join(root, architecture, marker)),
+  );
+  if (isUniversalRoot(configured)) {
     console.log(`[HeriHeriCloud] Using configured Android GStreamer SDK at ${configured}`);
     return;
   }
   const version = await latestStableVersion("android");
+  const extraction = resolve(cacheRoot, "android", version);
+  const completionMarker = resolve(extraction, ".complete");
+  const currentRootFile = resolve(cacheRoot, "android", "current-root.txt");
+  const recordedRoot = existsSync(currentRootFile) ? (await readFile(currentRootFile, "utf8")).trim() : "";
+  const extractionWasCompleted = existsSync(completionMarker) ||
+    (recordedRoot && resolve(recordedRoot).startsWith(`${extraction}${process.platform === "win32" ? "\\" : "/"}`));
+  if (extractionWasCompleted && isUniversalRoot(extraction)) {
+      await writeFile(currentRootFile, extraction, "utf8");
+      console.log(`[HeriHeriCloud] Android GStreamer ${version} is already ready at ${extraction}`);
+      return;
+  }
   const archiveName = `gstreamer-1.0-android-universal-${version}.tar.xz`;
   const archive = resolve(cacheRoot, "cache", archiveName);
   await downloadVerified(`https://gstreamer.freedesktop.org/data/pkg/android/${version}/${archiveName}`, archive);
-  const extraction = resolve(cacheRoot, "android", version);
-  await rm(extraction, { recursive: true, force: true });
   await mkdir(extraction, { recursive: true });
-  run("tar", ["-xf", archive, "-C", extraction], `Extracting Android GStreamer ${version}`);
-  const root = await findDirectoryContaining(extraction, marker);
-  if (!root) throw new Error("The Android archive did not contain the expected gst-android ndk-build SDK");
-  await writeFile(resolve(cacheRoot, "android", "current-root.txt"), root, "utf8");
-  console.log(`[HeriHeriCloud] Android GStreamer ${version} is ready at ${root}`);
+  await extractTarXz(archive, extraction, `Extracting Android GStreamer ${version}`);
+  if (!isUniversalRoot(extraction)) throw new Error("The Android archive did not contain every expected architecture of the universal gst-android SDK");
+  await writeFile(completionMarker, `${version}\n`, "utf8");
+  await writeFile(currentRootFile, extraction, "utf8");
+  console.log(`[HeriHeriCloud] Android GStreamer ${version} is ready at ${extraction}`);
 }
 
 async function setupIOS() {

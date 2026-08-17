@@ -64,6 +64,7 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
     private var status = "stopped"
     private var externalSubtitleUri: String? = null
     private var chromeViews: List<View> = emptyList()
+    private var nativeRuntimeReady = false
     private val hideChrome = Runnable {
         if (status == "playing") chromeViews.forEach { it.animate().alpha(0f).setDuration(220).start() }
     }
@@ -88,14 +89,23 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
     private external fun nativeDuration(): Long
     private external fun nativeIsPlaying(): Boolean
 
-    init {
-        System.loadLibrary("gstreamer_android")
-        System.loadLibrary("heri_gstreamer_player")
-    }
-
     override fun load(webView: WebView) {
         super.load(webView)
-        GStreamer.init(activity)
+    }
+
+    // Loading the monolithic GStreamer runtime during WebView creation blocks application startup.
+    // Initialize it only when the user actually opens media.
+    private fun ensureNativeRuntime(): String? {
+        if (nativeRuntimeReady) return null
+        return try {
+            System.loadLibrary("gstreamer_android")
+            System.loadLibrary("heri_gstreamer_player")
+            GStreamer.init(activity)
+            nativeRuntimeReady = true
+            null
+        } catch (error: Throwable) {
+            error.message ?: error.javaClass.simpleName
+        }
     }
 
     @Command fun open(invoke: Invoke) {
@@ -103,6 +113,10 @@ class GStreamerPlayerPlugin(private val activity: Activity) : Plugin(activity), 
         if (request.uri.isBlank()) return invoke.reject("A media URI is required")
         if (request.processor.kind != "passthrough") return invoke.reject("No ONNX frame processor is installed")
         activity.runOnUiThread {
+            ensureNativeRuntime()?.let { message ->
+                invoke.reject("Unable to initialize native GStreamer: $message")
+                return@runOnUiThread
+            }
             closePlayer()
             pendingRequest = request
             generation += 1

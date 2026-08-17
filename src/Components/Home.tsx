@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { isGStreamerMedia, openGStreamerMedia } from "../Services/gstreamerPlayer";
+import { isGStreamerMedia, openGStreamerMedia, shouldUseNativeMediaPlayer } from "../Services/gstreamerPlayer";
 import { QRCodeCanvas } from "qrcode.react";
 import { useTranslation } from "react-i18next";
 import { getFileIcon } from "../Utils/fileIcons";
@@ -451,11 +451,12 @@ export default function Home({ status }: { status: string }) {
     
     // Categorize extensions
     const mediaExts = ['mp4', 'mkv', 'webm', 'ogg', 'mp3', 'wav', 'flac', 'm4a', 'aac'];
+    const audioExts = ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg', 'opus', 'wma'];
     const imgExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
     const textExts = ['txt', 'json', 'md', 'csv', 'py', 'js', 'ts', 'jsx', 'tsx', 'c', 'cpp', 'h', 'rs', 'log', 'xml'];
     const docExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
 
-    if (isGStreamerMedia(node.name)) {
+    if (shouldUseNativeMediaPlayer(node.name)) {
       try {
         await openGStreamerMedia(node);
       } catch (error) {
@@ -468,9 +469,9 @@ export default function Home({ status }: { status: string }) {
     let wHeight = 480;
 
     // Determine Route and Window Size
-    if (mediaExts.includes(ext)) {
+    if (mediaExts.includes(ext) || isGStreamerMedia(node.name)) {
       routePath = "player";
-      wHeight = ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'].includes(ext) ? 200 : 480;
+      wHeight = audioExts.includes(ext) ? 200 : 480;
     } else if (imgExts.includes(ext)) {
       routePath = "image";
       wHeight = 650;
@@ -494,7 +495,7 @@ export default function Home({ status }: { status: string }) {
     }
     const streamUrl = encodeURIComponent(`http://127.0.0.1:${configuredPort}/stream/${node.id}`);
     const title = encodeURIComponent(node.name);
-    const isAudio = routePath === "player" && wHeight === 200;
+    const isAudio = routePath === "player" && audioExts.includes(ext);
 
     // Direct the new window to the correct HashRoute
     const routeUrl = `index.html#/${routePath}?url=${streamUrl}&title=${title}&isAudio=${isAudio}`;

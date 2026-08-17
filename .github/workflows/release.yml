@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+env:
+  GSTREAMER_VERSION: '1.28.6'
+  ANDROID_NDK_VERSION: '29.0.13846066'
+
 jobs:
   # --- PHASE 1: CREATE THE UNIFIED RELEASE DRAFT ---
   create-release:
@@ -43,11 +47,20 @@ jobs:
       - name: Initialize GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NOTES: ${{ steps.changelog.outputs.body }}
         run: |
-          gh release create ${{ github.ref_name }} \
-            --title "HeriHeri v${GITHUB_REF_NAME#v}" \
-            --notes "${{ steps.changelog.outputs.body }}" \
-            --draft=true
+          printf '%s\n' "$RELEASE_NOTES" > release-notes.md
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release edit "${{ github.ref_name }}" \
+              --title "HeriHeri v${GITHUB_REF_NAME#v}" \
+              --notes-file release-notes.md \
+              --draft=true
+          else
+            gh release create "${{ github.ref_name }}" \
+              --title "HeriHeri v${GITHUB_REF_NAME#v}" \
+              --notes-file release-notes.md \
+              --draft=true
+          fi
 
   # --- PHASE 2: COMPILE DESKTOP TARGETS (RUNS IN PARALLEL) ---
   publish-tauri:
@@ -60,12 +73,16 @@ jobs:
         include:
           - platform: "macos-latest"
             args: "--target universal-apple-darwin"
+            cache_suffix: "universal"
           - platform: "ubuntu-22.04"
             args: ""
+            cache_suffix: "x86_64"
           - platform: "windows-latest"
             args: ""
+            cache_suffix: "x86_64"
           - platform: "windows-latest"
             args: "--target i686-pc-windows-msvc"
+            cache_suffix: "x86"
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -88,6 +105,12 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
 
+      - name: Cache downloaded GStreamer SDKs
+        uses: actions/cache@v4
+        with:
+          path: .gstreamer
+          key: gstreamer-${{ runner.os }}-${{ matrix.cache_suffix }}-${{ env.GSTREAMER_VERSION }}-${{ hashFiles('scripts/setup-gstreamer.mjs', 'scripts/setup-gstreamer-windows.ps1') }}
+
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -99,10 +122,23 @@ jobs:
             librsvg2-dev \
             patchelf \
             libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev
+            libsoup-3.0-dev \
+            pkg-config \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-libav \
+            gstreamer1.0-gl \
+            gstreamer1.0-gtk3 \
+            gstreamer1.0-pulseaudio
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build Tauri Application & Inject Assets
         uses: tauri-apps/tauri-action@v0
@@ -110,7 +146,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
           CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
         with:
+          tauriScript: npm run tauri
           tagName: ${{ github.ref_name }}
           releaseName: "HeriHeri v__VERSION__"
           releaseDraft: true
@@ -132,7 +170,7 @@ jobs:
             if [ -f "$file" ]; then
               echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --pinentry-mode loopback --detach-sign --armor "$file"
               
-              gh release upload ${{ github.ref_name }} "$file.asc"
+              gh release upload ${{ github.ref_name }} "$file.asc" --clobber
             fi
           done
 
@@ -157,6 +195,29 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '17'
+          cache: 'gradle'
+
+      - name: Install required Android SDK and NDK
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(command -v sdkmanager)"
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;$ANDROID_NDK_VERSION"
+
+          NDK_ROOT="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          test -f "$NDK_ROOT/source.properties"
+          {
+            echo "NDK_HOME=$NDK_ROOT"
+            echo "ANDROID_NDK_HOME=$NDK_ROOT"
+            echo "ANDROID_NDK_ROOT=$NDK_ROOT"
+            echo "HERI_ANDROID_NDK_VERSION=$ANDROID_NDK_VERSION"
+          } >> "$GITHUB_ENV"
 
       - name: Install Rust stable with Android targets
         uses: dtolnay/rust-toolchain@stable
@@ -168,8 +229,14 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
 
+      - name: Cache Android GStreamer SDK
+        uses: actions/cache@v4
+        with:
+          path: .gstreamer
+          key: gstreamer-android-${{ env.GSTREAMER_VERSION }}-${{ hashFiles('scripts/setup-gstreamer.mjs') }}
+
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Setup Android Code Signing Assets
         env:
@@ -189,7 +256,6 @@ jobs:
             HERIHERI_SECRET_KEY: ${{ secrets.HERIHERI_SECRET_KEY }}
             CHUNKS_NAMES_KEY: ${{ secrets.CHUNKS_NAMES_KEY }}
         run: |
-          export NDK_HOME=$ANDROID_NDK_HOME
           npm run tauri android build -- --apk
 
       - name: Upload APK to Release
@@ -220,7 +286,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --locked --version 0.2.5
 
       - name: Inject Secret Keys and Map Mipsel Image
         run: |
@@ -249,7 +315,7 @@ jobs:
           else
             mv target/${{ matrix.target }}/release/heriheri-cli heriheri-openwrt-${{ matrix.target }}
           fi
-          gh release upload ${{ github.ref_name }} heriheri-openwrt-${{ matrix.target }}
+          gh release upload ${{ github.ref_name }} heriheri-openwrt-${{ matrix.target }} --clobber
 
   # --- PHASE 3.6: COMPILE DESKTOP CLI (RUNS IN PARALLEL) ---
   publish-cli:
@@ -292,7 +358,7 @@ jobs:
 
       - name: Install cross (Linux/Windows only)
         if: matrix.use_cross == true
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --locked --version 0.2.5
 
       - name: Inject Secret Keys
         run: |
@@ -319,7 +385,7 @@ jobs:
           else
             mv target/${{ matrix.target }}/release/heriheri-cli${{ matrix.ext }} heriheri-cli-${{ matrix.target }}${{ matrix.ext }}
           fi
-          gh release upload ${{ github.ref_name }} heriheri-cli-${{ matrix.target }}${{ matrix.ext }}
+          gh release upload ${{ github.ref_name }} heriheri-cli-${{ matrix.target }}${{ matrix.ext }} --clobber
 
   # --- PHASE 4: AUTOMATICALLY PUBLISH THE RELEASE ---
   finalize-release:

@@ -31,6 +31,19 @@ val hasReleaseSigning = listOf(
     releaseStoreFile,
     releaseStorePassword,
 ).all { !it.isNullOrBlank() }
+val androidNdkHome = providers.environmentVariable("ANDROID_NDK_HOME")
+    .orElse(providers.environmentVariable("NDK_HOME"))
+
+fun ndkHostTag(): String {
+    val os = System.getProperty("os.name").lowercase()
+    val arch = System.getProperty("os.arch").lowercase()
+    return when {
+        os.contains("win") -> "windows-x86_64"
+        os.contains("mac") && (arch.contains("aarch64") || arch.contains("arm64")) -> "darwin-arm64"
+        os.contains("mac") -> "darwin-x86_64"
+        else -> "linux-x86_64"
+    }
+}
 
 android {
     compileSdk = 36
@@ -59,13 +72,10 @@ android {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
-            isJniDebuggable = true
+            // Native symbols make the GStreamer and Rust libraries hundreds of MB larger.
+            // Keep regular application debugging while allowing AGP to strip packaged JNI code.
+            isJniDebuggable = false
             isMinifyEnabled = false
-            packaging {                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
-                jniLibs.keepDebugSymbols.add("*/armeabi-v7a/*.so")
-                jniLibs.keepDebugSymbols.add("*/x86/*.so")
-                jniLibs.keepDebugSymbols.add("*/x86_64/*.so")
-            }
         }
         getByName("release") {
             if (hasReleaseSigning) {
@@ -84,6 +94,46 @@ android {
     }
     buildFeatures {
         buildConfig = true
+    }
+}
+
+fun stripNativeDebugSections(outputDirectory: File) {
+    val ndkRoot = androidNdkHome.orNull
+        ?: throw GradleException("ANDROID_NDK_HOME or NDK_HOME is required to strip native debug symbols")
+    val stripTool = file("$ndkRoot/toolchains/llvm/prebuilt/${ndkHostTag()}/bin/llvm-strip" +
+        if (System.getProperty("os.name").lowercase().contains("win")) ".exe" else "")
+    check(stripTool.isFile) { "NDK llvm-strip was not found at ${stripTool.absolutePath}" }
+
+    fileTree(outputDirectory).matching { include("**/*.so") }.files.forEach { library ->
+        exec {
+            commandLine(stripTool.absolutePath, "--strip-debug", library.absolutePath)
+        }
+    }
+}
+
+// AGP 8.11 on Windows can copy native libraries unchanged when its legacy strip
+// executable is unavailable. Strip the merged package input first, then repeat on
+// AGP's copied output as a defensive fallback for other plugin/native task paths.
+tasks.configureEach {
+    if (name.startsWith("merge") && name.endsWith("NativeLibs")) {
+        doLast {
+            val variant = name.removePrefix("merge").removeSuffix("NativeLibs")
+                .replaceFirstChar { it.lowercase() }
+            val outputDirectory = layout.buildDirectory.dir(
+                "intermediates/merged_native_libs/$variant/$name/out/lib",
+            ).get().asFile
+            stripNativeDebugSections(outputDirectory)
+        }
+    }
+    if (name.startsWith("strip") && name.endsWith("DebugSymbols")) {
+        doLast {
+            val variant = name.removePrefix("strip").removeSuffix("DebugSymbols")
+                .replaceFirstChar { it.lowercase() }
+            val outputDirectory = layout.buildDirectory.dir(
+                "intermediates/stripped_native_libs/$variant/$name/out/lib",
+            ).get().asFile
+            stripNativeDebugSections(outputDirectory)
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { isGStreamerMedia, openGStreamerMedia } from "../Services/gstreamerPlayer";
+import { isGStreamerMedia, openGStreamerMedia, shouldUseNativeMediaPlayer } from "../Services/gstreamerPlayer";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
@@ -1336,7 +1336,7 @@ export default function ConceptDesktop({ status }: { status: string }) {
     const images = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"];
     const text = ["txt", "json", "md", "csv", "py", "js", "ts", "jsx", "tsx", "c", "cpp", "h", "rs", "log", "xml"];
     const documents = ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
-    if (isGStreamerMedia(node.name)) {
+    if (shouldUseNativeMediaPlayer(node.name)) {
       try {
         await openGStreamerMedia(node);
       } catch (reason) {
@@ -1345,7 +1345,7 @@ export default function ConceptDesktop({ status }: { status: string }) {
       return;
     }
     let route = "";
-    if (media.includes(ext)) route = "player";
+    if (media.includes(ext) || isGStreamerMedia(node.name)) route = "player";
     else if (images.includes(ext)) route = "image";
     else if (text.includes(ext)) route = "text";
     else if (documents.includes(ext)) route = "doc";
@@ -1360,7 +1360,7 @@ export default function ConceptDesktop({ status }: { status: string }) {
     const port = Number(config.webdavPort) || 8888;
     const stream = encodeURIComponent(`http://127.0.0.1:${port}/stream/${node.id}`);
     const title = encodeURIComponent(node.name);
-    const isAudio = ["mp3", "wav", "flac", "m4a", "aac", "ogg"].includes(ext);
+    const isAudio = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "wma"].includes(ext);
     new WebviewWindow(`concept-viewer-${node.id}`, {
       url: `index.html#/${route}?url=${stream}&title=${title}&isAudio=${isAudio}`,
       title: node.name,

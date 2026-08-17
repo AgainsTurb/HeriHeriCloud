@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tauriCli = resolve(projectRoot, "node_modules", "@tauri-apps", "cli", "tauri.js");
 const setupScript = resolve(projectRoot, "scripts", "setup-gstreamer.mjs");
+const androidNdkVersion = "29.0.13846066";
 const args = process.argv.slice(2);
 const targetDescription = [
   ...args,
@@ -138,19 +139,48 @@ function configureMacOSGStreamer(environment) {
 }
 
 function validAndroidRoot(root) {
-  return Boolean(root) && existsSync(join(root, "share", "gst-android", "ndk-build", "gstreamer-1.0.mk"));
+  const marker = join("share", "gst-android", "ndk-build", "gstreamer-1.0.mk");
+  return Boolean(root) && ["arm64", "armv7", "x86", "x86_64"].every((architecture) =>
+    existsSync(join(root, architecture, marker))
+  );
+}
+
+function normalizeAndroidRoot(root) {
+  if (validAndroidRoot(root)) return root;
+  const parent = root ? resolve(root, "..") : "";
+  return validAndroidRoot(parent) ? parent : root;
+}
+
+function configureAndroidNdk(environment) {
+  const sdkRoot = environmentValue(environment, "ANDROID_HOME") || environmentValue(environment, "ANDROID_SDK_ROOT");
+  const configuredRoot = environmentValue(environment, "NDK_HOME");
+  const expectedRoot = sdkRoot ? join(sdkRoot, "ndk", androidNdkVersion) : configuredRoot;
+  if (!expectedRoot || !existsSync(join(expectedRoot, "source.properties"))) {
+    throw new Error(
+      `Android NDK ${androidNdkVersion} was not found${expectedRoot ? ` at ${expectedRoot}` : " because ANDROID_HOME/ANDROID_SDK_ROOT is unset"}. ` +
+      `Install 'ndk;${androidNdkVersion}' in the Android SDK Manager, then retry.`,
+    );
+  }
+
+  const setValue = process.platform === "win32" ? setWindowsEnvironmentValue : (target, name, value) => { target[name] = value; };
+  setValue(environment, "NDK_HOME", expectedRoot);
+  setValue(environment, "ANDROID_NDK_HOME", expectedRoot);
+  setValue(environment, "ANDROID_NDK_ROOT", expectedRoot);
+  setValue(environment, "HERI_ANDROID_NDK_VERSION", androidNdkVersion);
+  console.log(`[HeriHeriCloud] Using unified Android NDK ${androidNdkVersion} from ${expectedRoot}`);
 }
 
 function configureAndroidGStreamer(environment) {
-  let root = environmentValue(environment, "GSTREAMER_ROOT_ANDROID");
+  let root = normalizeAndroidRoot(environmentValue(environment, "GSTREAMER_ROOT_ANDROID"));
   const pointer = resolve(projectRoot, ".gstreamer", "android", "current-root.txt");
-  if (!validAndroidRoot(root) && existsSync(pointer)) root = readFileSync(pointer, "utf8").trim();
+  if (!validAndroidRoot(root) && existsSync(pointer)) root = normalizeAndroidRoot(readFileSync(pointer, "utf8").trim());
   if (!validAndroidRoot(root)) {
     console.log("[HeriHeriCloud] Android GStreamer SDK was not found; fetching the latest stable universal SDK (large download).");
     runSetup("android");
     if (existsSync(pointer)) root = readFileSync(pointer, "utf8").trim();
   }
   if (!validAndroidRoot(root)) throw new Error("Android GStreamer setup completed, but GSTREAMER_ROOT_ANDROID is invalid");
+  writeFileSync(pointer, root, "utf8");
   environment.GSTREAMER_ROOT_ANDROID = root;
   environment.HERI_GSTREAMER_ANDROID_ROOT = root;
   console.log(`[HeriHeriCloud] Using Android GStreamer from ${root}`);
@@ -166,7 +196,10 @@ function configureIOSGStreamer() {
 }
 
 const environment = { ...process.env };
-if (isAndroidTarget) configureAndroidGStreamer(environment);
+if (isAndroidTarget) {
+  configureAndroidNdk(environment);
+  configureAndroidGStreamer(environment);
+}
 else if (isIOSTarget) configureIOSGStreamer();
 else if (process.platform === "win32") configureWindowsGStreamer(environment);
 else if (process.platform === "darwin") configureMacOSGStreamer(environment);
