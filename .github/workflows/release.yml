@@ -115,6 +115,14 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
+          # The hosted image can retain a held libunwind package. GStreamer's
+          # development package requires libunwind-dev, so install it first
+          # with explicit permission to reconcile that held dependency.
+          sudo apt-get install -y \
+            --allow-change-held-packages \
+            --allow-downgrades \
+            libunwind8 \
+            libunwind-dev
           sudo apt-get install -y \
             libgtk-3-dev \
             webkit2gtk-4.1-dev \
