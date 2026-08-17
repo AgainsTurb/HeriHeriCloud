@@ -17,6 +17,7 @@ const targetDescription = [
 ].filter(Boolean).join(" ");
 const isAndroidTarget = /android|androideabi/i.test(targetDescription);
 const isIOSTarget = /\bios\b|iphoneos|iphonesimulator/i.test(targetDescription);
+const isAppleCrossTarget = /universal-apple-darwin|(?:x86_64|aarch64)-apple-darwin/i.test(targetDescription);
 
 function environmentValue(environment, name) {
   const key = Object.keys(environment).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
@@ -134,6 +135,10 @@ function configureMacOSGStreamer(environment) {
   if (existsSync(join(pkgConfig, "gstreamer-1.0.pc"))) {
     environment.PKG_CONFIG_PATH = [pkgConfig, environmentValue(environment, "PKG_CONFIG_PATH")].filter(Boolean).join(delimiter);
     environment.PATH = [join(framework, "bin"), environmentValue(environment, "PATH")].filter(Boolean).join(delimiter);
+    // The official universal framework is valid for both slices of a Tauri
+    // universal build. pkg-config otherwise rejects the non-host slice before
+    // Cargo reaches the framework linker flags.
+    if (isAppleCrossTarget) environment.PKG_CONFIG_ALLOW_CROSS = "1";
   }
   console.log("[HeriHeriCloud] GStreamer for macOS is ready");
 }
