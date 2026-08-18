@@ -189,6 +189,16 @@ fn build_pipeline(request: &OpenRequest, volume: f64, muted: bool) -> Result<gst
         .build()
         .map_err(|error| format!("Unable to create the GStreamer playbin: {error}"))?;
 
+    #[cfg(target_os = "macos")]
+    {
+        // Keep playbin from selecting a non-overlay Apple sink. osxvideosink is the macOS sink
+        // whose VideoOverlay contract accepts the existing Tauri NSView supplied below.
+        let video_sink = gst::ElementFactory::make("osxvideosink")
+            .build()
+            .map_err(|error| format!("Unable to create the embedded macOS video sink: {error}"))?;
+        playbin.set_property("video-sink", &video_sink);
+    }
+
     playbin.set_property("video-filter", &processor_slot);
     Ok(playbin)
 }
@@ -584,12 +594,27 @@ fn stop(store: State<'_, PlayerStore>) -> Result<(), String> {
 fn seek(store: State<'_, PlayerStore>, position_ms: u64) -> Result<(), String> {
     let player = lock_player(&store)?;
     let pipeline = player.pipeline.as_ref().ok_or("No media is open")?;
-    seek_to(
-        pipeline,
-        player.rate,
-        gst::ClockTime::from_mseconds(position_ms),
-    )
-    .map_err(|error| format!("GStreamer rejected the seek request: {error}"))
+    let position = gst::ClockTime::from_mseconds(position_ms);
+    pipeline
+        .seek(
+            player.rate,
+            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+            gst::SeekType::Set,
+            position,
+            gst::SeekType::None,
+            gst::ClockTime::NONE,
+        )
+        .or_else(|_| {
+            pipeline.seek(
+                player.rate,
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+                gst::SeekType::Set,
+                position,
+                gst::SeekType::None,
+                gst::ClockTime::NONE,
+            )
+        })
+        .map_err(|error| format!("GStreamer rejected the seek request: {error}"))
 }
 
 #[tauri::command]

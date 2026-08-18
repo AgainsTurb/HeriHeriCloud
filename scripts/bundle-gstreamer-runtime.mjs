@@ -156,8 +156,8 @@ async function prepareMacOS(projectRoot, sourceRoot) {
   const platformPlugins = platformCandidates.filter(existsSync);
   const missing = common.filter((path) => !existsSync(path));
   if (missing.length) throw new Error(`The macOS GStreamer SDK is missing required plugins:\n${missing.join("\n")}`);
-  if (!existsSync(platformCandidates[0]) || !platformCandidates.slice(1).some(existsSync)) {
-    throw new Error("The macOS GStreamer SDK requires osxaudio plus an osxvideo/applemedia video sink plugin");
+  if (!existsSync(platformCandidates[0]) || !existsSync(platformCandidates[1])) {
+    throw new Error("The macOS GStreamer SDK requires the osxaudio and embeddable osxvideo plugins");
   }
   if (!existsSync(sourceScanner)) throw new Error(`The macOS GStreamer plugin scanner is missing: ${sourceScanner}`);
 

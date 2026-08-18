@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.6.1] – 2026-08-18
+
+### 新增
+- 无。
+
+### 变更
+- 无。
+
+### 修复
+- 修复原生视频播放器的一些bug。
+
+### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- Fixed some bugs in the native video player.
+
+---
+
+---
+
 ## [1.6.0] – 2026-08-17
 
 ### 新增

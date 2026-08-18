@@ -254,6 +254,9 @@ export async function openGStreamerMedia(
       await desktopWindow.setTitle(node.name);
       await videoHost.show();
       await desktopWindow.show();
+      // Linux window managers can apply final transient-window placement only when showing the
+      // pair, invalidating geometry measured while both windows were hidden.
+      if (currentPlatform === "linux") await alignVideoHost(desktopWindow, videoHost);
       await desktopWindow.setFocus();
     }
     if (currentPlatform === "android") {
