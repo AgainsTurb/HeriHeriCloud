@@ -243,12 +243,25 @@ async function prepareLinux(projectRoot, environment) {
   const sourcePlugins = commandOutput(
     "pkg-config", ["--variable=pluginsdir", "gstreamer-1.0"], "Locating Linux GStreamer plugins",
   );
+  const pluginScannerDir = commandOutput(
+    "pkg-config", ["--variable=pluginscannerdir", "gstreamer-1.0"], "Locating Linux GStreamer plugin scanner",
+  );
+  const libdir = commandOutput(
+    "pkg-config", ["--variable=libdir", "gstreamer-1.0"], "Locating Linux GStreamer libraries",
+  );
   const libexec = commandOutput(
     "pkg-config", ["--variable=libexecdir", "gstreamer-1.0"], "Locating Linux GStreamer helpers",
   );
-  const helperCandidates = [join(libexec, "gstreamer-1.0"), libexec];
+  const helperCandidates = [
+    pluginScannerDir,
+    join(libdir, "gstreamer1.0", "gstreamer-1.0"),
+    join(libexec, "gstreamer-1.0"),
+    libexec,
+  ].filter(Boolean);
   const sourceHelpers = helperCandidates.find((path) => existsSync(join(path, "gst-plugin-scanner")));
-  if (!sourceHelpers) throw new Error(`The Linux GStreamer plugin scanner was not found below ${libexec}`);
+  if (!sourceHelpers) {
+    throw new Error(`The Linux GStreamer plugin scanner was not found in: ${helperCandidates.join(", ")}`);
+  }
 
   const stage = resolve(projectRoot, ".gstreamer", "bundle", "linux-native");
   const stagePlugins = join(stage, "plugins");
