@@ -88,7 +88,10 @@ fn validate_uri(uri: &str) -> Result<(), String> {
     }
 }
 
-fn renderer_handle<R: Runtime>(app: &AppHandle<R>, label: &str) -> Result<usize, String> {
+fn renderer_handle<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+) -> Result<(usize, Option<&'static str>), String> {
     let window = app
         .get_window(label)
         .ok_or_else(|| format!("The player window '{label}' does not exist"))?;
@@ -99,11 +102,19 @@ fn renderer_handle<R: Runtime>(app: &AppHandle<R>, label: &str) -> Result<usize,
         match window.window_handle() {
             Ok(window_handle) => {
                 return match window_handle.as_raw() {
-                    RawWindowHandle::Win32(handle) => Ok(handle.hwnd.get() as usize),
-                    RawWindowHandle::AppKit(handle) => Ok(handle.ns_view.as_ptr() as usize),
-                    RawWindowHandle::Xlib(handle) => Ok(handle.window as usize),
-                    RawWindowHandle::Xcb(handle) => Ok(handle.window.get() as usize),
-                    RawWindowHandle::Wayland(handle) => Ok(handle.surface.as_ptr() as usize),
+                    RawWindowHandle::Win32(handle) => Ok((handle.hwnd.get() as usize, None)),
+                    RawWindowHandle::AppKit(handle) => {
+                        Ok((handle.ns_view.as_ptr() as usize, Some("osxvideosink")))
+                    }
+                    RawWindowHandle::Xlib(handle) => {
+                        Ok((handle.window as usize, Some("ximagesink")))
+                    }
+                    RawWindowHandle::Xcb(handle) => {
+                        Ok((handle.window.get() as usize, Some("ximagesink")))
+                    }
+                    RawWindowHandle::Wayland(handle) => {
+                        Ok((handle.surface.as_ptr() as usize, Some("waylandsink")))
+                    }
                     other => Err(format!("Unsupported desktop window handle: {other:?}")),
                 };
             }
@@ -166,7 +177,12 @@ fn release_pipeline(player: &mut Player) -> Result<(), String> {
     stop_result
 }
 
-fn build_pipeline(request: &OpenRequest, volume: f64, muted: bool) -> Result<gst::Element, String> {
+fn build_pipeline(
+    request: &OpenRequest,
+    volume: f64,
+    muted: bool,
+    video_sink_factory: Option<&str>,
+) -> Result<gst::Element, String> {
     gst::init().map_err(|error| format!("Unable to initialize GStreamer: {error}"))?;
 
     if !matches!(request.processor, FrameProcessorRequest::Passthrough) {
@@ -174,11 +190,6 @@ fn build_pipeline(request: &OpenRequest, volume: f64, muted: bool) -> Result<gst
             "The ONNX frame-processor API is reserved but no AI processor is installed".to_string(),
         );
     }
-
-    let processor_slot = gst::ElementFactory::make("identity")
-        .name("heriheri-frame-processor-slot")
-        .build()
-        .map_err(|error| format!("Unable to create the frame-processor slot: {error}"))?;
 
     let playbin = gst::ElementFactory::make("playbin")
         .name("heriheri-player")
@@ -189,17 +200,15 @@ fn build_pipeline(request: &OpenRequest, volume: f64, muted: bool) -> Result<gst
         .build()
         .map_err(|error| format!("Unable to create the GStreamer playbin: {error}"))?;
 
-    #[cfg(target_os = "macos")]
-    {
-        // Keep playbin from selecting a non-overlay Apple sink. osxvideosink is the macOS sink
-        // whose VideoOverlay contract accepts the existing Tauri NSView supplied below.
-        let video_sink = gst::ElementFactory::make("osxvideosink")
+    if let Some(factory) = video_sink_factory {
+        let video_sink = gst::ElementFactory::make(factory)
             .build()
-            .map_err(|error| format!("Unable to create the embedded macOS video sink: {error}"))?;
+            .map_err(|error| {
+                format!("Unable to create the embedded {factory} video sink: {error}")
+            })?;
         playbin.set_property("video-sink", &video_sink);
     }
 
-    playbin.set_property("video-filter", &processor_slot);
     Ok(playbin)
 }
 
@@ -431,8 +440,8 @@ fn open_inner<R: Runtime>(
         player.title = Some(request.title.clone());
         (player.volume, player.muted, generation)
     };
-    let native_handle = match renderer_handle(&app, renderer_label) {
-        Ok(handle) => handle,
+    let (native_handle, video_sink_factory) = match renderer_handle(&app, renderer_label) {
+        Ok(target) => target,
         Err(error) => {
             let mut player = lock_player(&store)?;
             if player.generation.load(Ordering::Acquire) == generation {
@@ -444,7 +453,7 @@ fn open_inner<R: Runtime>(
         }
     };
     eprintln!("[HeriHeriCloud GStreamer] Native renderer handle is ready");
-    let pipeline = match build_pipeline(&request, volume, muted) {
+    let pipeline = match build_pipeline(&request, volume, muted, video_sink_factory) {
         Ok(pipeline) => pipeline,
         Err(error) => {
             let mut player = lock_player(&store)?;

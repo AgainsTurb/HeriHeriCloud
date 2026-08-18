@@ -136,7 +136,7 @@ async function createDesktopVideoHostWindow(): Promise<Window> {
   }));
 }
 
-async function createDesktopPlayerWindow(title: string, videoHost: Window, isMacOS: boolean): Promise<WebviewWindow> {
+async function createDesktopPlayerWindow(title: string, videoHost: Window, isMacOS: boolean, isLinux: boolean): Promise<WebviewWindow> {
   return waitForWindowCreation(new WebviewWindow(DESKTOP_PLAYER_LABEL, {
     url: "index.html#/native-player",
     title,
@@ -153,7 +153,10 @@ async function createDesktopPlayerWindow(title: string, videoHost: Window, isMac
     // The native video host already owns the window shadow. A second shadow on the transparent
     // child is composited as horizontal black seams by macOS WindowServer.
     shadow: !isMacOS,
-    parent: videoHost,
+    // A GTK transient child can move when its parent is aligned to it, feeding the same offset
+    // back into the next synchronization. Showing the controller last keeps it above the
+    // non-focusable Linux host without establishing that geometry relationship.
+    ...(!isLinux && { parent: videoHost }),
   }));
 }
 
@@ -246,7 +249,12 @@ export async function openGStreamerMedia(
         videoHost = await createDesktopVideoHostWindow();
       }
       if (!desktopWindow) {
-        desktopWindow = await createDesktopPlayerWindow(node.name, videoHost, currentPlatform === "macos");
+        desktopWindow = await createDesktopPlayerWindow(
+          node.name,
+          videoHost,
+          currentPlatform === "macos",
+          currentPlatform === "linux",
+        );
       }
       await alignVideoHost(desktopWindow, videoHost);
       // Surface the controller before GStreamer performs network typefinding. This keeps startup
