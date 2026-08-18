@@ -269,7 +269,11 @@ async function prepareLinux(projectRoot, environment) {
   await rm(stage, { recursive: true, force: true });
   await Promise.all([mkdir(stagePlugins, { recursive: true }), mkdir(stageHelpers, { recursive: true })]);
 
-  const required = COMMON_PLUGINS.map((name) => pluginPath(sourcePlugins, name, "lib", ".so"));
+  const combinedVideoConvert = pluginPath(sourcePlugins, "videoconvertscale", "lib", ".so");
+  const linuxCommonPlugins = existsSync(combinedVideoConvert)
+    ? COMMON_PLUGINS
+    : COMMON_PLUGINS.flatMap((name) => name === "videoconvertscale" ? ["videoconvert", "videoscale"] : [name]);
+  const required = linuxCommonPlugins.map((name) => pluginPath(sourcePlugins, name, "lib", ".so"));
   const missing = required.filter((path) => !existsSync(path));
   if (missing.length) throw new Error(`The Linux GStreamer installation is missing required plugins:\n${missing.join("\n")}`);
   const video = LINUX_VIDEO_PLUGINS.map((name) => pluginPath(sourcePlugins, name, "lib", ".so")).filter(existsSync);
