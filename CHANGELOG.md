@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
+## [1.6.3] – 2026-08-22
+
+### 新增
+- 无。
+
+### 变更
+- 无。
+
+### 修复
+- 修复WebDAV挂载路径问题。
+
+### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- Fix WebDAV mount path issue.
+
+---
+
+---
+
 ## [1.6.2] – 2026-08-18
 
 ### 新增

@@ -809,6 +809,7 @@ async fn handle_dav_dispatch(
     let mut resolved_node_name = "Root".to_string();
 
     let parts: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+    let decoded_parts: Vec<String> = parts.iter().map(|part| decode_url(part)).collect();
     println!("[WEBDAV] 🗺️ Target Path: '{}' | Parts: {:?}", p, parts);
 
     for part in parts {
@@ -859,17 +860,14 @@ async fn handle_dav_dispatch(
                 is_dir,
                 current_node.as_ref(),
                 &resolved_node_name,
-                p,
+                &decoded_parts,
             );
 
             if depth == "1" && is_dir {
                 let children = get_resolved_children(tree, current_id);
                 for (child, resolved_name) in children {
-                    let child_path = if p.is_empty() || p == "/" {
-                        format!("/{}", resolved_name)
-                    } else {
-                        format!("{}/{}", p, resolved_name)
-                    };
+                    let mut child_path = decoded_parts.clone();
+                    child_path.push(resolved_name.clone());
                     let child_is_dir = child.node_type == crate::heriheri::NodeType::Directory;
                     append_propfind_node(
                         &mut xml,
@@ -934,33 +932,15 @@ fn append_propfind_node(
     is_dir: bool,
     node: Option<&crate::heriheri::VfsNode>,
     display_name: &str,
-    path: &str,
+    path_segments: &[String],
 ) {
     // 1. Format the raw path to ensure it starts with a slash
-    let mut raw_path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{}", path)
-    };
-
-    // 2. Trailing Slash Mandate: Directories MUST end with a slash in WebDAV
-    if is_dir && !raw_path.ends_with('/') {
-        raw_path.push('/');
-    } else if !is_dir && raw_path.ends_with('/') {
-        raw_path.pop(); // Strip trailing slash from files just in case
-    }
-
-    // 3. URL-Encode the path segments (don't encode the slashes!)
-    let encoded_path = raw_path
-        .split('/')
+    let encoded_path = path_segments
+        .iter()
         .map(|segment| url_encode_segment(segment))
-        .collect::<Vec<String>>()
+        .collect::<Vec<_>>()
         .join("/");
-
-    // Deduplicate any accidental double slashes
-    let mut href = format!("/dav{}", encoded_path).replace("//", "/");
-
-    // Final sanity check for Apple's strict parser: Folders MUST end with a slash.
+    let mut href = format!("/dav/{}", encoded_path);
     if is_dir && !href.ends_with('/') {
         href.push('/');
     }
